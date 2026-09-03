@@ -105,6 +105,16 @@ class TestPresensiMahasiswaMultiKelasSystem(unittest.TestCase):
         self.assertIn("Geometri", summary_str)
         self.assertIn("Praktikum", summary_str)
 
+        # Verifikasi Durasi Shift: Total (07:45 - 17:00 = 9j 15m) dikurang Kelas (4j 30m) = 4j 45m
+        durasi_shift = database.calculate_durasi_shift("07:45:00", "17:00:00", riwayat_kelas_list=riwayat)
+        self.assertEqual(durasi_shift, "4j 45m")
+
+        # Verifikasi data presensi di database memuat durasi_shift yang benar
+        history_p = database.get_presensi_history(pegawai_id=p_id)
+        self.assertTrue(len(history_p) > 0)
+        self.assertEqual(history_p[0]["durasi_shift"], "4j 45m")
+        self.assertEqual(history_p[0]["total_durasi"], "9j 15m")
+
     def test_03_summary_and_reports(self):
         summary = database.get_today_summary()
         self.assertIn("total_pegawai", summary)
@@ -115,16 +125,32 @@ class TestPresensiMahasiswaMultiKelasSystem(unittest.TestCase):
         records = database.get_presensi_history()
         self.assertTrue(len(records) > 0)
 
-        # Test Export Excel
+        # Test Export Excel memuat kolom Durasi Shift dan Izin
         excel_path = "test_multi_kelas.xlsx"
         export_utils.export_to_excel(records, excel_path)
         self.assertTrue(os.path.exists(excel_path))
+        import openpyxl
+        wb = openpyxl.load_workbook(excel_path)
+        sheet = wb.active
+        headers = [cell.value for cell in sheet[4]]
+        self.assertIn("Durasi Shift", headers)
+        self.assertIn("Izin Keluar", headers)
+        self.assertIn("Kembali Shift", headers)
+        self.assertIn("Total Durasi Izin", headers)
+        self.assertNotIn("Durasi Total", headers)
+        wb.close()
         os.remove(excel_path)
 
-        # Test Export CSV
+        # Test Export CSV memuat kolom Durasi Shift dan Izin
         csv_path = "test_multi_kelas.csv"
         export_utils.export_to_csv(records, csv_path)
         self.assertTrue(os.path.exists(csv_path))
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            first_line = f.readline()
+            self.assertIn("Durasi Shift", first_line)
+            self.assertIn("Jam Izin Keluar", first_line)
+            self.assertIn("Total Durasi Izin", first_line)
+            self.assertNotIn("Durasi Total", first_line)
         os.remove(csv_path)
 
     def test_04_auto_close_active_class_on_clockout(self):
@@ -150,6 +176,98 @@ class TestPresensiMahasiswaMultiKelasSystem(unittest.TestCase):
         riwayat = database.get_riwayat_kelas_today(p_id)
         self.assertEqual(len(riwayat), 1)
         self.assertEqual(riwayat[0]["jam_kembali_kelas"], "17:00:00")
+
+    def test_05_durasi_shift_edge_cases(self):
+        # 1. Kasus tanpa kelas: 08:00 - 16:00 -> 8j 0m
+        self.assertEqual(database.calculate_durasi_shift("08:00:00", "16:00:00"), "8j 0m")
+
+        # 2. Kasus dengan string kelas: 08:00 - 17:00 (9j) dikurang 2j 30m -> 6j 30m
+        self.assertEqual(database.calculate_durasi_shift("08:00:00", "17:00:00", durasi_kelas_str="2j 30m"), "6j 30m")
+
+        # 3. Kasus durasi kelas lebih besar dari total durasi (clamp ke 0)
+        self.assertEqual(database.calculate_durasi_shift("08:00:00", "09:00:00", durasi_kelas_str="2j 0m"), "0j 0m")
+
+        # 4. Kasus belum keluar (jam_keluar None / '-')
+        self.assertEqual(database.calculate_durasi_shift("08:00:00", None), "-")
+        self.assertEqual(database.calculate_durasi_shift(None, "17:00:00"), "-")
+
+        # 5. Kasus format waktu terbalik
+        self.assertEqual(database.calculate_durasi_shift("17:00:00", "08:00:00"), "-")
+
+        # 6. Kasus kombinasi kelas dan izin: Masuk 08:00 - Keluar 17:00 (9j 0m), Kelas 1j 30m, Izin 1j 0m -> 6j 30m
+        self.assertEqual(
+            database.calculate_durasi_shift("08:00:00", "17:00:00", durasi_kelas_str="1j 30m", durasi_izin_str="1j 0m"),
+            "6j 30m"
+        )
+
+    def test_06_izin_keluar_kembali_shift_flow(self):
+        success, msg, p_id = database.add_pegawai("Mahasiswa Pengujian Izin")
+        self.assertTrue(success)
+
+        # Reset presensi, riwayat kelas & riwayat izin hari ini
+        conn = database.get_connection()
+        conn.cursor().execute("DELETE FROM presensi WHERE pegawai_id = ? AND tanggal = ?", (p_id, database.get_today_str()))
+        conn.cursor().execute("DELETE FROM riwayat_kelas WHERE pegawai_id = ? AND tanggal = ?", (p_id, database.get_today_str()))
+        conn.cursor().execute("DELETE FROM riwayat_izin WHERE pegawai_id = ? AND tanggal = ?", (p_id, database.get_today_str()))
+        conn.commit()
+        conn.close()
+
+        # 1. JAM MASUK 08:00:00
+        success, msg, rec = database.record_attendance(p_id, "masuk", custom_time="08:00:00")
+        self.assertTrue(success)
+
+        # 2. IZIN KELUAR 10:00:00
+        success_iz, msg_iz, rec_iz = database.record_attendance(p_id, "izin_keluar", keterangan="Keperluan Administrasi", custom_time="10:00:00")
+        self.assertTrue(success_iz)
+        self.assertEqual(rec_iz["status"], "Sedang Izin Keluar")
+
+        # Coba izin lagi sebelum kembali -> harus ditolak
+        dup_iz, _, _ = database.record_attendance(p_id, "izin_keluar", custom_time="10:30:00")
+        self.assertFalse(dup_iz, "Harus menolak izin keluar baru saat sesi izin aktif masih berlangsung")
+
+        # 3. KEMBALI SHIFT 11:30:00 (Durasi izin: 1j 30m)
+        success_kb, msg_kb, rec_kb = database.record_attendance(p_id, "kembali_shift", custom_time="11:30:00")
+        self.assertTrue(success_kb)
+        self.assertEqual(rec_kb["status"], "Hadir di Lab")
+
+        # 4. SESI KELAS 13:00 - 14:30 (Durasi kelas: 1j 30m)
+        database.record_attendance(p_id, "kelas", keterangan="Micro Teaching B", custom_time="13:00:00")
+        database.record_attendance(p_id, "kembali_kelas", custom_time="14:30:00")
+
+        # 5. JAM KELUAR / PULANG 17:00:00 (Total Kehadiran: 08:00 - 17:00 = 9j 0m)
+        success_out, msg_out, rec_out = database.record_attendance(p_id, "keluar", custom_time="17:00:00")
+        self.assertTrue(success_out)
+        self.assertEqual(rec_out["status"], "Sudah Pulang")
+
+        # 6. VERIFIKASI RIWAYAT IZIN & DURASI SHIFT
+        riwayat_izin = database.get_riwayat_izin_today(p_id)
+        self.assertEqual(len(riwayat_izin), 1)
+        self.assertEqual(riwayat_izin[0]["keterangan"], "Keperluan Administrasi")
+        dur_izin = database.calculate_total_izin_duration(riwayat_izin)
+        self.assertEqual(dur_izin, "1j 30m")
+
+        # Durasi Shift = 9j 0m - 1j 30m (kelas) - 1j 30m (izin) = 6j 0m
+        history_p = database.get_presensi_history(pegawai_id=p_id)
+        self.assertTrue(len(history_p) > 0)
+        self.assertEqual(history_p[0]["durasi_total_kelas"], "1j 30m")
+        self.assertEqual(history_p[0]["durasi_total_izin"], "1j 30m")
+        self.assertEqual(history_p[0]["total_durasi"], "9j 0m")
+        self.assertEqual(history_p[0]["durasi_shift"], "6j 0m")
+
+        # 7. TEST AUTO-CLOSE IZIN JIKA LANGSUNG PULANG
+        success2, _, p2_id = database.add_pegawai("Mahasiswa Auto Close Izin")
+        self.assertTrue(success2)
+        database.record_attendance(p2_id, "masuk", custom_time="08:00:00")
+        database.record_attendance(p2_id, "izin_keluar", keterangan="Izin mendadak", custom_time="11:00:00")
+        # Pulang jam 12:00 tanpa kembali shift terlebih dahulu
+        success_out2, _, rec_out2 = database.record_attendance(p2_id, "keluar", custom_time="12:00:00")
+        self.assertTrue(success_out2)
+        riwayat_iz2 = database.get_riwayat_izin_today(p2_id)
+        self.assertEqual(len(riwayat_iz2), 1)
+        self.assertEqual(riwayat_iz2[0]["jam_kembali_izin"], "12:00:00")
+        # Shift duration = 4j (08:00-12:00) - 1j (izin 11:00-12:00) = 3j 0m
+        h2 = database.get_presensi_history(pegawai_id=p2_id)
+        self.assertEqual(h2[0]["durasi_shift"], "3j 0m")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

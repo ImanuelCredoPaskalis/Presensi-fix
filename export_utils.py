@@ -8,7 +8,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from config import load_config
-from database import calculate_time_diff_hours
+from database import calculate_time_diff_hours, calculate_durasi_shift
 
 def build_excel_workbook(records, start_date=None, end_date=None):
     """
@@ -35,12 +35,13 @@ def build_excel_workbook(records, start_date=None, end_date=None):
     fill_status_terlambat = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
     fill_status_tugas = PatternFill(start_color="DBEAFE", end_color="DBEAFE", fill_type="solid")
     fill_status_kelas = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")
+    fill_status_izin = PatternFill(start_color="FFEDD5", end_color="FFEDD5", fill_type="solid")
 
     thin_border_side = Side(border_style="thin", color="CBD5E1")
     border_cell = Border(left=thin_border_side, right=thin_border_side, top=thin_border_side, bottom=thin_border_side)
 
     # Title Block
-    ws.merge_cells("A1:M1")
+    ws.merge_cells("A1:P1")
     ws["A1"] = f"LAPORAN REKAPITULASI PRESENSI MAHASISWA - {company_name.upper()}"
     ws["A1"].font = font_title
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
@@ -51,7 +52,7 @@ def build_excel_workbook(records, start_date=None, end_date=None):
     elif start_date:
         periode_str = f"Mulai Tanggal: {start_date}"
 
-    ws.merge_cells("A2:M2")
+    ws.merge_cells("A2:P2")
     ws["A2"] = f"{periode_str} | Dicetak pada: {datetime.datetime.now().strftime('%d-%m-%Y %H:%M:%S')}"
     ws["A2"].font = font_sub
     ws["A2"].alignment = Alignment(horizontal="center", vertical="center")
@@ -68,8 +69,11 @@ def build_excel_workbook(records, start_date=None, end_date=None):
         "Total Durasi Kelas",
         "Tugas Luar",
         "Kembali Tugas",
+        "Izin Keluar",
+        "Kembali Shift",
+        "Total Durasi Izin",
         "Jam Keluar",
-        "Durasi Total",
+        "Durasi Shift",
         "Status & Keterangan"
     ]
 
@@ -96,13 +100,30 @@ def build_excel_workbook(records, start_date=None, end_date=None):
         
         jam_tugas = r.get("jam_bertugas_keluar") or "-"
         jam_kembali = r.get("jam_kembali") or "-"
+
+        # Izin keluar info
+        jam_izin = r.get("jam_izin_keluar") or "-"
+        jam_kembali_shift = r.get("jam_kembali_izin") or "-"
+        durasi_total_izin = r.get("durasi_total_izin") or "-"
+
         jam_keluar = r.get("jam_keluar") or "-"
-        durasi_kerja = calculate_time_diff_hours(r.get("jam_masuk"), r.get("jam_keluar"))
+        durasi_shift = r.get("durasi_shift")
+        if not durasi_shift or durasi_shift == "-":
+            durasi_shift = calculate_durasi_shift(
+                r.get("jam_masuk"),
+                r.get("jam_keluar"),
+                riwayat_kelas_list=r.get("riwayat_kelas_list"),
+                durasi_kelas_str=durasi_total_kelas,
+                riwayat_izin_list=r.get("riwayat_izin_list"),
+                durasi_izin_str=durasi_total_izin
+            )
         
         status_ket = r.get("status") or "Hadir"
         keterangan_tambahan = []
         if r.get("keterangan_tugas"):
             keterangan_tambahan.append(f"Tugas: {r.get('keterangan_tugas')}")
+        if r.get("keterangan_izin"):
+            keterangan_tambahan.append(f"Izin: {r.get('keterangan_izin')}")
         
         if keterangan_tambahan:
             status_ket += f" ({', '.join(keterangan_tambahan)})"
@@ -118,8 +139,11 @@ def build_excel_workbook(records, start_date=None, end_date=None):
             durasi_total_kelas,
             jam_tugas,
             jam_kembali,
+            jam_izin,
+            jam_kembali_shift,
+            durasi_total_izin,
             jam_keluar,
-            durasi_kerja,
+            durasi_shift,
             status_ket
         ]
 
@@ -132,13 +156,13 @@ def build_excel_workbook(records, start_date=None, end_date=None):
             cell.border = border_cell
 
             # Alignment logic
-            if col_num in [1, 2, 5, 6, 8, 9, 10, 11, 12]:
+            if col_num in [1, 2, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15]:
                 cell.alignment = Alignment(horizontal="center", vertical="center")
             else:
                 cell.alignment = Alignment(horizontal="left", vertical="center")
 
             # Status highlighting
-            if col_num == 13:
+            if col_num == 16:
                 if "Terlambat" in str(val):
                     cell.fill = fill_status_terlambat
                 elif "Tepat Waktu" in str(val):
@@ -147,6 +171,8 @@ def build_excel_workbook(records, start_date=None, end_date=None):
                     cell.fill = fill_status_kelas
                 elif "Tugas Luar" in str(val):
                     cell.fill = fill_status_tugas
+                elif "Izin" in str(val):
+                    cell.fill = fill_status_izin
 
         ws.row_dimensions[current_row].height = 22
         current_row += 1
@@ -192,15 +218,26 @@ def export_to_csv(records, file_path):
         writer.writerow([
             "No", "Tanggal", "Nama Mahasiswa", "Program Studi", "Status Mahasiswa",
             "Jam Masuk", "Total Sesi Kelas", "Rincian Jam Kelas", "Total Durasi Kelas",
-            "Jam Tugas Keluar", "Jam Kembali Tugas", "Jam Keluar",
-            "Durasi Total", "Status", "Keterangan Tugas"
+            "Jam Tugas Keluar", "Jam Kembali Tugas",
+            "Jam Izin Keluar", "Jam Kembali Shift", "Total Durasi Izin",
+            "Jam Keluar", "Durasi Shift", "Status", "Keterangan Tugas", "Keterangan Izin"
         ])
 
         for idx, r in enumerate(records, 1):
             total_sesi = r.get("total_sesi_kelas", 0)
             rincian_kelas = r.get("ringkasan_kelas") or ""
             durasi_total_kelas = r.get("durasi_total_kelas") or ""
-            durasi_kerja = calculate_time_diff_hours(r.get("jam_masuk"), r.get("jam_keluar"))
+            durasi_total_izin = r.get("durasi_total_izin") or ""
+            durasi_shift = r.get("durasi_shift")
+            if not durasi_shift or durasi_shift == "-":
+                durasi_shift = calculate_durasi_shift(
+                    r.get("jam_masuk"),
+                    r.get("jam_keluar"),
+                    riwayat_kelas_list=r.get("riwayat_kelas_list"),
+                    durasi_kelas_str=durasi_total_kelas,
+                    riwayat_izin_list=r.get("riwayat_izin_list"),
+                    durasi_izin_str=durasi_total_izin
+                )
             
             writer.writerow([
                 idx,
@@ -214,10 +251,14 @@ def export_to_csv(records, file_path):
                 durasi_total_kelas,
                 r.get("jam_bertugas_keluar", ""),
                 r.get("jam_kembali", ""),
+                r.get("jam_izin_keluar", ""),
+                r.get("jam_kembali_izin", ""),
+                durasi_total_izin,
                 r.get("jam_keluar", ""),
-                durasi_kerja,
+                durasi_shift,
                 r.get("status", ""),
-                r.get("keterangan_tugas", "")
+                r.get("keterangan_tugas", ""),
+                r.get("keterangan_izin", "")
             ])
     return True
 
@@ -231,15 +272,26 @@ def get_csv_bytes(records):
     writer.writerow([
         "No", "Tanggal", "Nama Mahasiswa", "Program Studi", "Status Mahasiswa",
         "Jam Masuk", "Total Sesi Kelas", "Rincian Jam Kelas", "Total Durasi Kelas",
-        "Jam Tugas Keluar", "Jam Kembali Tugas", "Jam Keluar",
-        "Durasi Total", "Status", "Keterangan Tugas"
+        "Jam Tugas Keluar", "Jam Kembali Tugas",
+        "Jam Izin Keluar", "Jam Kembali Shift", "Total Durasi Izin",
+        "Jam Keluar", "Durasi Shift", "Status", "Keterangan Tugas", "Keterangan Izin"
     ])
 
     for idx, r in enumerate(records, 1):
         total_sesi = r.get("total_sesi_kelas", 0)
         rincian_kelas = r.get("ringkasan_kelas") or ""
         durasi_total_kelas = r.get("durasi_total_kelas") or ""
-        durasi_kerja = calculate_time_diff_hours(r.get("jam_masuk"), r.get("jam_keluar"))
+        durasi_total_izin = r.get("durasi_total_izin") or ""
+        durasi_shift = r.get("durasi_shift")
+        if not durasi_shift or durasi_shift == "-":
+            durasi_shift = calculate_durasi_shift(
+                r.get("jam_masuk"),
+                r.get("jam_keluar"),
+                riwayat_kelas_list=r.get("riwayat_kelas_list"),
+                durasi_kelas_str=durasi_total_kelas,
+                riwayat_izin_list=r.get("riwayat_izin_list"),
+                durasi_izin_str=durasi_total_izin
+            )
         
         writer.writerow([
             idx,
@@ -253,9 +305,13 @@ def get_csv_bytes(records):
             durasi_total_kelas,
             r.get("jam_bertugas_keluar", ""),
             r.get("jam_kembali", ""),
+            r.get("jam_izin_keluar", ""),
+            r.get("jam_kembali_izin", ""),
+            durasi_total_izin,
             r.get("jam_keluar", ""),
-            durasi_kerja,
+            durasi_shift,
             r.get("status", ""),
-            r.get("keterangan_tugas", "")
+            r.get("keterangan_tugas", ""),
+            r.get("keterangan_izin", "")
         ])
     return output.getvalue().encode("utf-8-sig")

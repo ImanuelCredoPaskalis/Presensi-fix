@@ -60,6 +60,57 @@ def modal_tugas_keluar(pegawai):
         if st.button("Batal", use_container_width=True):
             st.rerun()
 
+@st.dialog("☕ Keterangan Izin Keluar Sementara")
+def modal_izin_keluar(pegawai):
+    riwayat = database.get_riwayat_izin_today(pegawai["id"])
+    next_sesi = len(riwayat) + 1
+    st.write(f"**Mahasiswa:** {pegawai['nama']}")
+    st.write(f"Masukkan Alasan / Keperluan Izin Keluar untuk **Sesi #{next_sesi}**:")
+    default_ket = f"Izin Keluar Sementara (Sesi #{next_sesi})"
+    ket_input = st.text_input("Alasan / Keperluan Izin:", value=default_ket, placeholder="Contoh: Makan Siang / Keperluan Pribadi / Fotokopi / Urusan Akademik")
+    
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("✅ Mulai Izin Keluar", type="primary", use_container_width=True):
+            clean_ket = ket_input.strip() if ket_input.strip() else default_ket
+            success, msg, rec = database.record_attendance(pegawai["id"], "izin_keluar", clean_ket)
+            if success:
+                st.session_state["presensi_alert"] = {"type": "success", "msg": msg}
+            else:
+                st.session_state["presensi_alert"] = {"type": "error", "msg": msg}
+            st.rerun()
+    with col2:
+        if st.button("Batal", use_container_width=True):
+            st.rerun()
+
+@st.dialog("🔍 Rincian Sesi Izin Keluar Hari Ini")
+def modal_rincian_sesi_izin(pegawai):
+    st.markdown(f"### ☕ Rincian Sesi Izin Hari Ini: {pegawai['nama']}")
+    riwayat_izin = database.get_riwayat_izin_today(pegawai["id"])
+    total_dur = database.calculate_total_izin_duration(riwayat_izin)
+    st.caption(f"Total: **{len(riwayat_izin)} Sesi Izin** • Total Durasi Izin: **{total_dur}**")
+
+    if not riwayat_izin:
+        st.info("Belum ada sesi izin keluar hari ini.")
+    else:
+        tbl_data = []
+        for idx, r in enumerate(riwayat_izin, 1):
+            m = r.get("jam_izin_keluar") or "-"
+            k = r.get("jam_kembali_izin") or "(Sedang Izin Keluar)"
+            dur = database.calculate_time_diff_hours(r.get("jam_izin_keluar"), r.get("jam_kembali_izin"))
+            ket = r.get("keterangan") or "-"
+            tbl_data.append({
+                "Sesi #": f"Sesi #{idx}",
+                "Jam Izin Keluar": m,
+                "Jam Kembali Shift": k,
+                "Durasi": dur,
+                "Alasan / Keperluan": ket
+            })
+        st.table(tbl_data)
+
+    if st.button("Tutup", use_container_width=True):
+        st.rerun()
+
 @st.dialog("🔍 Rincian Sesi Kelas Hari Ini")
 def modal_rincian_sesi_kelas(pegawai):
     st.markdown(f"### 📚 Rincian Sesi Kelas Hari Ini: {pegawai['nama']}")
@@ -197,6 +248,7 @@ def render_presensi_view():
         if selected_pegawai:
             today_record = database.get_today_presence_record(selected_pegawai["id"])
             riwayat_kelas = database.get_riwayat_kelas_today(selected_pegawai["id"])
+            riwayat_izin = database.get_riwayat_izin_today(selected_pegawai["id"])
             
             masuk = today_record.get("jam_masuk") or "-" if today_record else "-"
             tugas = today_record.get("jam_bertugas_keluar") or "-" if today_record else "-"
@@ -211,8 +263,23 @@ def render_presensi_view():
             if total_dur_kelas != "-":
                 kelas_text += f" [Durasi: {total_dur_kelas}]"
 
+            total_sesi_izin = len(riwayat_izin)
+            total_dur_izin = database.calculate_total_izin_duration(riwayat_izin)
+            ringkasan_izin = database.format_izin_summary(riwayat_izin)
+
+            izin_text = f"Izin ({total_sesi_izin} sesi): {ringkasan_izin}" if total_sesi_izin > 0 else "Izin: -"
+            if total_dur_izin != "-":
+                izin_text += f" [Durasi: {total_dur_izin}]"
+
             if today_record:
-                status_text = f"HARI INI: [Masuk: {masuk}] [{kelas_text}] [Tugas: {tugas}] [Pulang: {keluar}] • {status.upper()}"
+                shift_info = ""
+                if keluar != "-":
+                    dur_shift = today_record.get("durasi_shift")
+                    if not dur_shift or dur_shift == "-":
+                        dur_shift = database.calculate_durasi_shift(masuk, keluar, riwayat_kelas_list=riwayat_kelas, riwayat_izin_list=riwayat_izin)
+                    if dur_shift != "-":
+                        shift_info = f" [Durasi Shift: {dur_shift}]"
+                status_text = f"HARI INI: [Masuk: {masuk}] [{kelas_text}] [Tugas: {tugas}] [{izin_text}] [Pulang: {keluar}]{shift_info} • {status.upper()}"
             else:
                 status_text = "STATUS HARI INI: BELUM PRESENSI"
 
@@ -225,6 +292,10 @@ def render_presensi_view():
                 badge_bg = "#DBEAFE"
                 badge_color = "#1E40AF"
                 border_color = "#93C5FD"
+            elif status == "Sedang Izin Keluar":
+                badge_bg = "#FFEDD5"
+                badge_color = "#9A3412"
+                border_color = "#FDBA74"
             elif status == "Sudah Pulang":
                 badge_bg = "#FEE2E2"
                 badge_color = "#991B1B"
@@ -274,22 +345,24 @@ def render_presensi_view():
     with col_right:
         st.markdown("### ⚡ Pilih Aksi Presensi Mahasiswa")
 
-        # 6 Tombol Aksi (Grid 2 Baris x 3 Kolom)
-        btn_r1c1, btn_r1c2, btn_r1c3 = st.columns(3)
-        with btn_r1c1:
-            btn_masuk = st.button("🟢 **JAM MASUK**\n\n(Datang Lab/Kampus)", use_container_width=True, key="btn_masuk")
-        with btn_r1c2:
-            btn_kelas = st.button("🏫 **JAM KE KELAS**\n\n(Mulai Masuk Kelas)", use_container_width=True, key="btn_kelas")
-        with btn_r1c3:
-            btn_kembali_kelas = st.button("🔙 **KEMBALI KELAS**\n\n(Selesai Sesi Kelas)", use_container_width=True, key="btn_kembali_kelas")
-
-        btn_r2c1, btn_r2c2, btn_r2c3 = st.columns(3)
-        with btn_r2c1:
-            btn_tugas = st.button("🚗 **TUGAS KELUAR**\n\n(Tugas Luar Kampus)", use_container_width=True, key="btn_tugas")
-        with btn_r2c2:
-            btn_kembali_tugas = st.button("🏢 **KEMBALI TUGAS**\n\n(Selesai Tugas Luar)", use_container_width=True, key="btn_kembali_tugas")
-        with btn_r2c3:
-            btn_keluar = st.button("🚪 **JAM KELUAR**\n\n(Selesai / Pulang)", use_container_width=True, key="btn_keluar")
+        # 8 Tombol Aksi (Grid 4 Kolom x 2 Baris)
+        btn_c1, btn_c2, btn_c3, btn_c4 = st.columns(4)
+        with btn_c1:
+            btn_masuk = st.button("🟢 **JAM MASUK**\n\n(Datang Lab)", use_container_width=True, key="btn_masuk")
+            st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+            btn_keluar = st.button("🚪 **JAM KELUAR**\n\n(Selesai/Pulang)", use_container_width=True, key="btn_keluar")
+        with btn_c2:
+            btn_kelas = st.button("🏫 **JAM KE KELAS**\n\n(Mulai Kelas)", use_container_width=True, key="btn_kelas")
+            st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+            btn_kembali_kelas = st.button("🔙 **KEMBALI KELAS**\n\n(Selesai Kelas)", use_container_width=True, key="btn_kembali_kelas")
+        with btn_c3:
+            btn_tugas = st.button("🚗 **TUGAS KELUAR**\n\n(Tugas Luar)", use_container_width=True, key="btn_tugas")
+            st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+            btn_kembali_tugas = st.button("🏢 **KEMBALI TUGAS**\n\n(Selesai Tugas)", use_container_width=True, key="btn_kembali_tugas")
+        with btn_c4:
+            btn_izin = st.button("☕ **IZIN KELUAR**\n\n(Izin Sementara)", use_container_width=True, key="btn_izin")
+            st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+            btn_kembali_shift = st.button("🔙 **KEMBALI SHIFT**\n\n(Lanjut Shift)", use_container_width=True, key="btn_kembali_shift")
 
         # Logika Penanganan Tombol
         if btn_masuk:
@@ -328,6 +401,20 @@ def render_presensi_view():
             st.session_state["presensi_alert"] = {"type": "success" if success else "error", "msg": msg}
             st.rerun()
 
+        if btn_izin:
+            if not selected_pegawai:
+                st.session_state["presensi_alert"] = {"type": "error", "msg": "Harap pilih nama mahasiswa dari daftar terlebih dahulu!"}
+                st.rerun()
+            modal_izin_keluar(selected_pegawai)
+
+        if btn_kembali_shift:
+            if not selected_pegawai:
+                st.session_state["presensi_alert"] = {"type": "error", "msg": "Harap pilih nama mahasiswa dari daftar terlebih dahulu!"}
+                st.rerun()
+            success, msg, rec = database.record_attendance(selected_pegawai["id"], "kembali_shift")
+            st.session_state["presensi_alert"] = {"type": "success" if success else "error", "msg": msg}
+            st.rerun()
+
         if btn_keluar:
             if not selected_pegawai:
                 st.session_state["presensi_alert"] = {"type": "error", "msg": "Harap pilih nama mahasiswa dari daftar terlebih dahulu!"}
@@ -350,19 +437,26 @@ def render_presensi_view():
 
     # ================= 3. TABEL STATUS & RIWAYAT LIVE HARI INI =================
     st.markdown("---")
-    head_t_col1, head_t_col2, head_t_col3 = st.columns([6, 2, 2])
+    head_t_col1, head_t_col2, head_t_col3, head_t_col4 = st.columns([5, 1.5, 1.75, 1.75])
     with head_t_col1:
         st.markdown("#### 📋 Status & Riwayat Presensi Mahasiswa Hari Ini (Live Real-Time)")
     with head_t_col2:
         if st.button("🔄 Segarkan Data", use_container_width=True, key="btn_refresh_today"):
             st.rerun()
     with head_t_col3:
-        btn_details = st.button("🔍 Lihat Rincian Sesi Kelas", use_container_width=True, key="btn_detail_session")
+        btn_details = st.button("🔍 Sesi Kelas", use_container_width=True, key="btn_detail_session")
         if btn_details:
             if selected_pegawai:
                 modal_rincian_sesi_kelas(selected_pegawai)
             else:
                 st.warning("Pilih salah satu mahasiswa terlebih dahulu untuk melihat rincian sesi kelas!")
+    with head_t_col4:
+        btn_details_izin = st.button("☕ Sesi Izin", use_container_width=True, key="btn_detail_izin")
+        if btn_details_izin:
+            if selected_pegawai:
+                modal_rincian_sesi_izin(selected_pegawai)
+            else:
+                st.warning("Pilih salah satu mahasiswa terlebih dahulu untuk melihat rincian sesi izin!")
 
     today_records = database.get_today_presence_table()
     
@@ -378,7 +472,10 @@ def render_presensi_view():
                 "Durasi Kelas": r.get("durasi_total_kelas") or "-",
                 "Tugas Luar": r.get("jam_bertugas_keluar") or "-",
                 "Kembali Tugas": r.get("jam_kembali") or "-",
+                "Izin Keluar": r.get("display_jam_izin") or "-",
+                "Durasi Izin": r.get("durasi_total_izin") or "-",
                 "Jam Keluar": r.get("jam_keluar") or "-",
+                "Durasi Shift": r.get("durasi_shift") or "-",
                 "Status Saat Ini": r.get("status") or "Belum Presensi"
             })
         

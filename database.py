@@ -61,6 +61,12 @@ def init_db():
         cursor.execute("ALTER TABLE presensi ADD COLUMN jam_kembali_kelas TEXT")
     if "keterangan_kelas" not in columns:
         cursor.execute("ALTER TABLE presensi ADD COLUMN keterangan_kelas TEXT")
+    if "jam_izin_keluar" not in columns:
+        cursor.execute("ALTER TABLE presensi ADD COLUMN jam_izin_keluar TEXT")
+    if "jam_kembali_izin" not in columns:
+        cursor.execute("ALTER TABLE presensi ADD COLUMN jam_kembali_izin TEXT")
+    if "keterangan_izin" not in columns:
+        cursor.execute("ALTER TABLE presensi ADD COLUMN keterangan_izin TEXT")
 
     # Tabel Riwayat Detail Tugas Luar
     cursor.execute("""
@@ -87,6 +93,22 @@ def init_db():
         tanggal TEXT NOT NULL,
         jam_masuk_kelas TEXT NOT NULL,
         jam_kembali_kelas TEXT,
+        keterangan TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (pegawai_id) REFERENCES pegawai (id),
+        FOREIGN KEY (presensi_id) REFERENCES presensi (id)
+    )
+    """)
+
+    # Tabel Riwayat Detail Izin Keluar (Multi-Sesi Izin)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS riwayat_izin (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        presensi_id INTEGER,
+        pegawai_id INTEGER NOT NULL,
+        tanggal TEXT NOT NULL,
+        jam_izin_keluar TEXT NOT NULL,
+        jam_kembali_izin TEXT,
         keterangan TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (pegawai_id) REFERENCES pegawai (id),
@@ -338,6 +360,92 @@ def format_kelas_time_display(riwayat_list):
             sesi_strs.append(f"K{idx}: {s}-{e}")
         return f"{len(riwayat_list)} Sesi ({', '.join(sesi_strs)})"
 
+def get_riwayat_izin_today(pegawai_id, tanggal=None):
+    if not tanggal:
+        tanggal = get_today_str()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM riwayat_izin 
+        WHERE pegawai_id = ? AND tanggal = ?
+        ORDER BY id ASC
+    """, (pegawai_id, tanggal))
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+def calculate_total_izin_duration(riwayat_list):
+    """
+    Menghitung total durasi kumulatif seluruh sesi izin keluar dalam 1 hari.
+    """
+    if not riwayat_list:
+        return "-"
+    
+    total_seconds = 0
+    valid_sessions = 0
+    for r in riwayat_list:
+        start_str = r.get("jam_izin_keluar")
+        end_str = r.get("jam_kembali_izin")
+        if start_str and end_str:
+            try:
+                t1 = datetime.datetime.strptime(start_str, "%H:%M:%S")
+                t2 = datetime.datetime.strptime(end_str, "%H:%M:%S")
+                if t2 >= t1:
+                    total_seconds += int((t2 - t1).total_seconds())
+                    valid_sessions += 1
+            except Exception:
+                pass
+    
+    if valid_sessions == 0 and total_seconds == 0:
+        return "-"
+    
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    return f"{hours}j {minutes}m"
+
+def format_izin_summary(riwayat_list):
+    """
+    Memformat ringkasan multi-sesi izin keluar menjadi teks ramah baca.
+    """
+    if not riwayat_list:
+        return "-"
+    
+    parts = []
+    for idx, r in enumerate(riwayat_list, 1):
+        start = r.get("jam_izin_keluar") or "?"
+        end = r.get("jam_kembali_izin")
+        ket = r.get("keterangan") or "Izin Keluar"
+        
+        start_short = start[:5] if len(start) == 8 else start
+        if end:
+            end_short = end[:5] if len(end) == 8 else end
+            parts.append(f"Iz{idx}: {start_short}-{end_short} ({ket})")
+        else:
+            parts.append(f"Iz{idx}: {start_short}-Sedang Izin ({ket})")
+            
+    return " | ".join(parts)
+
+def format_izin_time_display(riwayat_list):
+    """
+    Format kolom jam izin keluar ringkas untuk tabel.
+    """
+    if not riwayat_list:
+        return "-"
+    if len(riwayat_list) == 1:
+        r = riwayat_list[0]
+        start = r.get("jam_izin_keluar") or "-"
+        end = r.get("jam_kembali_izin")
+        if end:
+            return f"{start[:5]}-{end[:5]}"
+        return f"{start[:5]} (Sedang Izin)"
+    else:
+        sesi_strs = []
+        for idx, r in enumerate(riwayat_list, 1):
+            s = r.get("jam_izin_keluar", "")[:5]
+            e = r.get("jam_kembali_izin", "")[:5] if r.get("jam_kembali_izin") else "Aktif"
+            sesi_strs.append(f"Iz{idx}: {s}-{e}")
+        return f"{len(riwayat_list)} Izin ({', '.join(sesi_strs)})"
+
 # ==================== PRESENSI ====================
 
 def get_today_str():
@@ -587,7 +695,86 @@ def record_attendance(pegawai_id, action_type, keterangan="", custom_time=None):
         conn.commit()
         msg = f"Selamat Datang Kembali! Presensi KEMBALI TUGAS tercatat pukul {now_time}."
 
-    # 6. AKSI: JAM KELUAR / SELESAI
+    # 6. AKSI: JAM IZIN KELUAR
+    elif action_type == "izin_keluar":
+        if not existing or not existing["jam_masuk"]:
+            conn.close()
+            return False, f"{pegawai['nama']} belum melakukan presensi Masuk hari ini. Harus presensi Masuk terlebih dahulu sebelum Izin Keluar.", None
+
+        if existing["jam_keluar"]:
+            conn.close()
+            return False, f"{pegawai['nama']} sudah melakukan presensi KELUAR/SELESAI hari ini pukul {existing['jam_keluar']}.", dict(existing)
+
+        # Cek apakah sedang di kelas
+        cursor.execute("SELECT * FROM riwayat_kelas WHERE pegawai_id = ? AND tanggal = ? AND jam_kembali_kelas IS NULL", (pegawai_id, today))
+        if cursor.fetchone():
+            conn.close()
+            return False, f"{pegawai['nama']} saat ini tercatat SEDANG DI KELAS. Selesaikan sesi kelas terlebih dahulu.", dict(existing)
+
+        # Cek apakah sedang tugas luar
+        if existing["jam_bertugas_keluar"] and not existing["jam_kembali"]:
+            conn.close()
+            return False, f"{pegawai['nama']} saat ini tercatat SEDANG TUGAS LUAR. Selesaikan tugas luar terlebih dahulu.", dict(existing)
+
+        # Cek apakah sudah sedang izin keluar
+        cursor.execute("SELECT * FROM riwayat_izin WHERE pegawai_id = ? AND tanggal = ? AND jam_kembali_izin IS NULL", (pegawai_id, today))
+        active_izin = cursor.fetchone()
+        if active_izin:
+            conn.close()
+            return False, f"{pegawai['nama']} saat ini masih tercatat SEDANG IZIN KELUAR sejak pukul {active_izin['jam_izin_keluar']}. Silakan lakukan presensi 'Kembali Shift' terlebih dahulu.", dict(existing)
+
+        cursor.execute("SELECT COUNT(*) FROM riwayat_izin WHERE pegawai_id = ? AND tanggal = ?", (pegawai_id, today))
+        sesi_izin_num = cursor.fetchone()[0] + 1
+
+        ket = keterangan.strip() if keterangan else f"Izin Keluar Sementara (Sesi #{sesi_izin_num})"
+
+        cursor.execute("""
+            UPDATE presensi 
+            SET jam_izin_keluar = ?, jam_kembali_izin = NULL, keterangan_izin = ?, 
+                status = 'Sedang Izin Keluar', updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (now_time, ket, existing["id"]))
+
+        cursor.execute("""
+            INSERT INTO riwayat_izin (presensi_id, pegawai_id, tanggal, jam_izin_keluar, keterangan)
+            VALUES (?, ?, ?, ?, ?)
+        """, (existing["id"], pegawai_id, today, now_time, ket))
+
+        conn.commit()
+        msg = f"Berhasil! Presensi IZIN KELUAR tercatat pukul {now_time}. Keterangan: {ket}."
+
+    # 7. AKSI: KEMBALI SHIFT (SELESAI IZIN KELUAR)
+    elif action_type == "kembali_shift":
+        cursor.execute("""
+            SELECT * FROM riwayat_izin 
+            WHERE pegawai_id = ? AND tanggal = ? AND jam_kembali_izin IS NULL
+            ORDER BY id DESC LIMIT 1
+        """, (pegawai_id, today))
+        active_izin = cursor.fetchone()
+
+        if not active_izin:
+            conn.close()
+            return False, f"{pegawai['nama']} saat ini TIDAK sedang izin keluar.", dict(existing) if existing else None
+
+        cursor.execute("""
+            UPDATE riwayat_izin 
+            SET jam_kembali_izin = ? 
+            WHERE id = ?
+        """, (now_time, active_izin["id"]))
+
+        durasi_izin = calculate_time_diff_hours(active_izin["jam_izin_keluar"], now_time)
+
+        if existing:
+            cursor.execute("""
+                UPDATE presensi 
+                SET jam_kembali_izin = ?, status = 'Hadir di Lab', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (now_time, existing["id"]))
+
+        conn.commit()
+        msg = f"Selamat Datang Kembali! Selesai Izin Keluar pukul {now_time} (Durasi Izin: {durasi_izin}). Shift dilanjutkan."
+
+    # 8. AKSI: JAM KELUAR / SELESAI
     elif action_type == "keluar":
         if existing and existing["jam_keluar"]:
             conn.close()
@@ -604,6 +791,7 @@ def record_attendance(pegawai_id, action_type, keterangan="", custom_time=None):
                 WHERE presensi_id = ? AND jam_kembali_kelas IS NULL
             """, (now_time, existing["id"]))
 
+            # Tutup otomatis sesi tugas luar jika masih ada yang aktif
             if existing["jam_bertugas_keluar"] and not existing["jam_kembali"]:
                 update_fields.append("jam_kembali = ?")
                 params.append(now_time)
@@ -612,6 +800,21 @@ def record_attendance(pegawai_id, action_type, keterangan="", custom_time=None):
                     SET jam_kembali = ? 
                     WHERE presensi_id = ? AND jam_kembali IS NULL
                 """, (now_time, existing["id"]))
+
+            # Tutup otomatis sesi izin keluar jika masih ada yang aktif
+            cursor.execute("""
+                UPDATE riwayat_izin 
+                SET jam_kembali_izin = ? 
+                WHERE presensi_id = ? AND jam_kembali_izin IS NULL
+            """, (now_time, existing["id"]))
+
+            cursor.execute("""
+                SELECT jam_izin_keluar, jam_kembali_izin FROM presensi WHERE id = ?
+            """, (existing["id"],))
+            p_iz = cursor.fetchone()
+            if p_iz and p_iz["jam_izin_keluar"] and not p_iz["jam_kembali_izin"]:
+                update_fields.append("jam_kembali_izin = ?")
+                params.append(now_time)
 
             params.append(existing["id"])
             sql = f"UPDATE presensi SET {', '.join(update_fields)} WHERE id = ?"
@@ -622,8 +825,19 @@ def record_attendance(pegawai_id, action_type, keterangan="", custom_time=None):
                 VALUES (?, ?, ?, ?, 'Sudah Pulang')
             """, (pegawai_id, today, now_time, now_time))
 
+        # Hitung durasi shift jika ada jam masuk
+        jam_masuk_awal = existing["jam_masuk"] if (existing and existing["jam_masuk"]) else now_time
+        cursor.execute("SELECT * FROM riwayat_kelas WHERE presensi_id = ?", (existing["id"] if existing else -1,))
+        rk_closed = [dict(r) for r in cursor.fetchall()]
+        cursor.execute("SELECT * FROM riwayat_izin WHERE presensi_id = ?", (existing["id"] if existing else -1,))
+        ri_closed = [dict(r) for r in cursor.fetchall()]
+        shift_dur = calculate_durasi_shift(jam_masuk_awal, now_time, riwayat_kelas_list=rk_closed, riwayat_izin_list=ri_closed)
+
         conn.commit()
-        msg = f"Sampai Jumpa! Presensi KELUAR / SELESAI tercatat pukul {now_time}."
+        if shift_dur != "-":
+            msg = f"Sampai Jumpa! Presensi KELUAR / SELESAI tercatat pukul {now_time} (Durasi Shift: {shift_dur})."
+        else:
+            msg = f"Sampai Jumpa! Presensi KELUAR / SELESAI tercatat pukul {now_time}."
 
     else:
         conn.close()
@@ -657,6 +871,7 @@ def get_today_summary():
     hadir = 0
     sedang_kelas = 0
     tugas_luar = 0
+    sedang_izin = 0
     pulang = 0
 
     for r in records:
@@ -664,12 +879,14 @@ def get_today_summary():
             pulang += 1
         elif r["status"] == "Sedang di Kelas":
             sedang_kelas += 1
+        elif r["status"] == "Sedang Izin Keluar":
+            sedang_izin += 1
         elif r["jam_bertugas_keluar"] and not r["jam_kembali"]:
             tugas_luar += 1
-        elif r["jam_masuk"] or r["jam_kembali"] or r["jam_kembali_kelas"]:
+        elif r["jam_masuk"] or r["jam_kembali"] or r["jam_kembali_kelas"] or r.get("jam_kembali_izin"):
             hadir += 1
 
-    belum_absen = max(0, total_pegawai - (hadir + sedang_kelas + tugas_luar + pulang))
+    belum_absen = max(0, total_pegawai - (hadir + sedang_kelas + tugas_luar + sedang_izin + pulang))
 
     conn.close()
     return {
@@ -677,6 +894,7 @@ def get_today_summary():
         "hadir": hadir,
         "sedang_kelas": sedang_kelas,
         "tugas_luar": tugas_luar,
+        "sedang_izin": sedang_izin,
         "pulang": pulang,
         "belum_absen": belum_absen,
         "tanggal": today
@@ -691,7 +909,8 @@ def get_today_presence_table():
                p.id as presensi_id, p.tanggal, p.jam_masuk, 
                p.jam_masuk_kelas, p.jam_kembali_kelas, p.keterangan_kelas,
                p.jam_bertugas_keluar, p.jam_kembali, p.jam_keluar, 
-               p.keterangan_tugas, p.status
+               p.keterangan_tugas, p.jam_izin_keluar, p.jam_kembali_izin, p.keterangan_izin,
+               p.status
         FROM pegawai pg
         LEFT JOIN presensi p ON pg.id = p.pegawai_id AND p.tanggal = ?
         WHERE pg.status_aktif = 1
@@ -699,15 +918,16 @@ def get_today_presence_table():
             CASE 
                 WHEN p.status = 'Sedang di Kelas' THEN 1
                 WHEN p.status = 'Sedang Tugas Luar' THEN 2
-                WHEN p.jam_masuk IS NOT NULL AND p.jam_keluar IS NULL THEN 3
-                WHEN p.jam_keluar IS NOT NULL THEN 4
-                ELSE 5
+                WHEN p.status = 'Sedang Izin Keluar' THEN 3
+                WHEN p.jam_masuk IS NOT NULL AND p.jam_keluar IS NULL THEN 4
+                WHEN p.jam_keluar IS NOT NULL THEN 5
+                ELSE 6
             END,
             pg.nama ASC
     """, (today,))
     rows = [dict(r) for r in cursor.fetchall()]
 
-    # Tambahkan data riwayat kelas untuk setiap baris
+    # Tambahkan data riwayat kelas dan izin untuk setiap baris
     for row in rows:
         if row.get("presensi_id"):
             cursor.execute("""
@@ -716,14 +936,36 @@ def get_today_presence_table():
                 ORDER BY id ASC
             """, (row["presensi_id"],))
             rk_list = [dict(r) for r in cursor.fetchall()]
+
+            cursor.execute("""
+                SELECT * FROM riwayat_izin 
+                WHERE presensi_id = ? 
+                ORDER BY id ASC
+            """, (row["presensi_id"],))
+            ri_list = [dict(r) for r in cursor.fetchall()]
         else:
             rk_list = []
+            ri_list = []
         
         row["riwayat_kelas_list"] = rk_list
         row["total_sesi_kelas"] = len(rk_list)
         row["ringkasan_kelas"] = format_kelas_summary(rk_list)
         row["display_jam_kelas"] = format_kelas_time_display(rk_list)
         row["durasi_total_kelas"] = calculate_total_kelas_duration(rk_list)
+
+        row["riwayat_izin_list"] = ri_list
+        row["total_sesi_izin"] = len(ri_list)
+        row["ringkasan_izin"] = format_izin_summary(ri_list)
+        row["display_jam_izin"] = format_izin_time_display(ri_list)
+        row["durasi_total_izin"] = calculate_total_izin_duration(ri_list)
+
+        row["total_durasi"] = calculate_time_diff_hours(row.get("jam_masuk"), row.get("jam_keluar"))
+        row["durasi_shift"] = calculate_durasi_shift(
+            row.get("jam_masuk"),
+            row.get("jam_keluar"),
+            riwayat_kelas_list=rk_list,
+            riwayat_izin_list=ri_list
+        )
 
     conn.close()
     return rows
@@ -736,7 +978,8 @@ def get_presensi_history(start_date=None, end_date=None, pegawai_id=None, depart
         SELECT p.id as presensi_id, p.tanggal, p.jam_masuk, 
                p.jam_masuk_kelas, p.jam_kembali_kelas, p.keterangan_kelas,
                p.jam_bertugas_keluar, p.jam_kembali, p.jam_keluar, 
-               p.keterangan_tugas, p.status, p.catatan,
+               p.keterangan_tugas, p.jam_izin_keluar, p.jam_kembali_izin, p.keterangan_izin,
+               p.status, p.catatan,
                pg.id as pegawai_id, pg.nik, pg.nama, pg.jabatan, pg.departemen
         FROM presensi p
         JOIN pegawai pg ON p.pegawai_id = pg.id
@@ -766,7 +1009,7 @@ def get_presensi_history(start_date=None, end_date=None, pegawai_id=None, depart
     cursor.execute(query, params)
     rows = [dict(r) for r in cursor.fetchall()]
 
-    # Tambahkan riwayat kelas per presensi
+    # Tambahkan riwayat kelas dan riwayat izin per presensi
     for row in rows:
         cursor.execute("""
             SELECT * FROM riwayat_kelas 
@@ -774,12 +1017,33 @@ def get_presensi_history(start_date=None, end_date=None, pegawai_id=None, depart
             ORDER BY id ASC
         """, (row["presensi_id"],))
         rk_list = [dict(r) for r in cursor.fetchall()]
+
+        cursor.execute("""
+            SELECT * FROM riwayat_izin 
+            WHERE presensi_id = ? 
+            ORDER BY id ASC
+        """, (row["presensi_id"],))
+        ri_list = [dict(r) for r in cursor.fetchall()]
         
         row["riwayat_kelas_list"] = rk_list
         row["total_sesi_kelas"] = len(rk_list)
         row["ringkasan_kelas"] = format_kelas_summary(rk_list)
         row["display_jam_kelas"] = format_kelas_time_display(rk_list)
         row["durasi_total_kelas"] = calculate_total_kelas_duration(rk_list)
+
+        row["riwayat_izin_list"] = ri_list
+        row["total_sesi_izin"] = len(ri_list)
+        row["ringkasan_izin"] = format_izin_summary(ri_list)
+        row["display_jam_izin"] = format_izin_time_display(ri_list)
+        row["durasi_total_izin"] = calculate_total_izin_duration(ri_list)
+
+        row["total_durasi"] = calculate_time_diff_hours(row.get("jam_masuk"), row.get("jam_keluar"))
+        row["durasi_shift"] = calculate_durasi_shift(
+            row.get("jam_masuk"),
+            row.get("jam_keluar"),
+            riwayat_kelas_list=rk_list,
+            riwayat_izin_list=ri_list
+        )
 
     conn.close()
     return rows
@@ -798,6 +1062,82 @@ def calculate_time_diff_hours(time_start_str, time_end_str):
         total_seconds = int(diff.total_seconds())
         hours = total_seconds // 3600
         minutes = (total_seconds % 3600) // 60
+        return f"{hours}j {minutes}m"
+    except Exception:
+        return "-"
+
+def parse_duration_to_seconds(dur_str):
+    """
+    Mengubah format durasi 'Xj Ym' atau sejenisnya menjadi total detik.
+    Contoh: '1j 30m' -> 5400, '45m' -> 2700, '2j' -> 7200.
+    """
+    if not dur_str or dur_str == "-":
+        return 0
+    try:
+        import re
+        hours = 0
+        minutes = 0
+        h_match = re.search(r'(\d+)\s*(?:j|jam)', dur_str, re.IGNORECASE)
+        if h_match:
+            hours = int(h_match.group(1))
+        m_match = re.search(r'(\d+)\s*(?:m|menit)', dur_str, re.IGNORECASE)
+        if m_match:
+            minutes = int(m_match.group(1))
+        return hours * 3600 + minutes * 60
+    except Exception:
+        return 0
+
+def calculate_durasi_shift(time_start_str, time_end_str, riwayat_kelas_list=None, durasi_kelas_str=None, riwayat_izin_list=None, durasi_izin_str=None):
+    """
+    Menghitung durasi shift mahasiswa:
+    Total Durasi Kehadiran (time_start s/d time_end) dikurangi Total Durasi Kelas dan Total Durasi Izin Keluar.
+    Jika tidak ada kelas/izin, durasi shift sama dengan total durasi kehadiran.
+    Jika belum ada time_end (belum checkout/pulang), mengembalikan '-'.
+    """
+    if not time_start_str or not time_end_str:
+        return "-"
+    try:
+        t1 = datetime.datetime.strptime(time_start_str, "%H:%M:%S")
+        t2 = datetime.datetime.strptime(time_end_str, "%H:%M:%S")
+        if t2 < t1:
+            return "-"
+        total_seconds = int((t2 - t1).total_seconds())
+
+        kelas_seconds = 0
+        if riwayat_kelas_list is not None:
+            for r in riwayat_kelas_list:
+                s_str = r.get("jam_masuk_kelas")
+                e_str = r.get("jam_kembali_kelas")
+                if s_str and e_str:
+                    try:
+                        k1 = datetime.datetime.strptime(s_str, "%H:%M:%S")
+                        k2 = datetime.datetime.strptime(e_str, "%H:%M:%S")
+                        if k2 >= k1:
+                            kelas_seconds += int((k2 - k1).total_seconds())
+                    except Exception:
+                        pass
+        elif durasi_kelas_str:
+            kelas_seconds = parse_duration_to_seconds(durasi_kelas_str)
+
+        izin_seconds = 0
+        if riwayat_izin_list is not None:
+            for r in riwayat_izin_list:
+                s_str = r.get("jam_izin_keluar")
+                e_str = r.get("jam_kembali_izin")
+                if s_str and e_str:
+                    try:
+                        i1 = datetime.datetime.strptime(s_str, "%H:%M:%S")
+                        i2 = datetime.datetime.strptime(e_str, "%H:%M:%S")
+                        if i2 >= i1:
+                            izin_seconds += int((i2 - i1).total_seconds())
+                    except Exception:
+                        pass
+        elif durasi_izin_str:
+            izin_seconds = parse_duration_to_seconds(durasi_izin_str)
+
+        shift_seconds = max(0, total_seconds - kelas_seconds - izin_seconds)
+        hours = shift_seconds // 3600
+        minutes = (shift_seconds % 3600) // 60
         return f"{hours}j {minutes}m"
     except Exception:
         return "-"

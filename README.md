@@ -38,17 +38,19 @@ streamlit run web_app.py
 ### 1. Terminal Presensi Mahasiswa & Jam Digital Real-Time
 - Tampilan **Jam Digital Besar (Detik & Kalender Indonesia)** real-time.
 - **Pencarian Nama & Dropdown Mahasiswa**: Cukup ketik nama atau pilih langsung dari daftar mahasiswa.
-- **6 Tombol Aksi Intuitif**:
+- **8 Tombol Aksi Intuitif**:
   - **Jam Masuk**: Mencatat kehadiran datang lab/kampus.
   - **Jam Ke Kelas**: Input nama kelas/ruangan/mata kuliah dan mencatat mulai kelas.
   - **Kembali Kelas**: Mencatat kepulangan dari kelas kembali ke lab.
   - **Tugas Keluar**: Input tujuan tugas luar kampus (misal: observasi sekolah mitra).
   - **Kembali Tugas**: Mencatat selesai tugas luar.
+  - **Izin Keluar**: Input alasan izin sementara keluar lab (misal: keperluan pribadi, makan).
+  - **Kembali Shift**: Mencatat waktu kembali ke lab untuk melanjutkan shift.
   - **Jam Keluar**: Mencatat jam kepulangan / selesai.
 - **Live Status Badge & Feedback Alert**: Menampilkan status mahasiswa secara visual dan real-time.
 
 ### 2. Dashboard & Live Monitoring
-- **6 Kartu Metrik Kehadiran Hari Ini**: Total Mahasiswa, Hadir di Lab, Sedang di Kelas, Sedang Tugas Luar, Sudah Pulang, Belum Absen.
+- **7 Kartu Metrik Kehadiran Hari Ini**: Total Mahasiswa, Hadir di Lab, Sedang di Kelas, Sedang Tugas, Sedang Izin, Sudah Pulang, Belum Absen.
 - **Tabel Live Real-Time**: Memantau status seluruh mahasiswa hari ini beserta seluruh kolom jam.
 - Filter pencarian nama mahasiswa.
 
@@ -59,7 +61,7 @@ streamlit run web_app.py
 
 ### 4. Rekapitulasi & Laporan Presensi
 - Filter berdasarkan rentang tanggal dan nama mahasiswa.
-- Perhitungan otomatis **Durasi Jam Kelas** dan **Durasi Total Kehadiran**.
+- Perhitungan otomatis **Durasi Jam Kelas**, **Durasi Izin Keluar**, dan **Durasi Shift Mahasiswa** (Total Kehadiran dikurang Durasi Kelas dan Durasi Izin).
 - **Ekspor ke Excel (.xlsx)** dan **Ekspor ke CSV**.
 
 ### 5. Pengaturan Sistem

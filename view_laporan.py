@@ -35,6 +35,34 @@ def modal_rincian_laporan(presensi_record):
     if st.button("Tutup", use_container_width=True):
         st.rerun()
 
+@st.dialog("☕ Rincian Sesi Izin Keluar")
+def modal_rincian_izin_laporan(presensi_record):
+    st.markdown(f"### ☕ Rincian Sesi Izin: {presensi_record.get('nama')}")
+    riwayat_izin = presensi_record.get("riwayat_izin_list", [])
+    total_dur = presensi_record.get("durasi_total_izin", "-")
+    st.caption(f"Tanggal: **{presensi_record.get('tanggal')}** • Total: **{len(riwayat_izin)} Sesi Izin** • Total Durasi Izin: **{total_dur}**")
+
+    if not riwayat_izin:
+        st.info("Tidak ada aktivitas izin keluar pada tanggal ini.")
+    else:
+        tbl_data = []
+        for idx, r in enumerate(riwayat_izin, 1):
+            m = r.get("jam_izin_keluar") or "-"
+            k = r.get("jam_kembali_izin") or "(Sedang Izin Keluar)"
+            dur = database.calculate_time_diff_hours(r.get("jam_izin_keluar"), r.get("jam_kembali_izin"))
+            ket = r.get("keterangan") or "-"
+            tbl_data.append({
+                "Sesi #": f"Sesi #{idx}",
+                "Jam Izin": m,
+                "Jam Kembali Shift": k,
+                "Durasi": dur,
+                "Alasan / Keperluan": ket
+            })
+        st.table(tbl_data)
+
+    if st.button("Tutup", use_container_width=True, key="btn_close_modal_izin"):
+        st.rerun()
+
 def render_laporan_view():
     all_pegawai = database.get_all_pegawai(only_active=False)
 
@@ -142,7 +170,17 @@ def render_laporan_view():
             sesi_str = f"{total_sesi} Sesi" if total_sesi > 0 else "-"
             rincian_kelas = r.get("ringkasan_kelas") or "-"
             durasi_kelas = r.get("durasi_total_kelas") or "-"
-            durasi_kerja = database.calculate_time_diff_hours(r.get("jam_masuk"), r.get("jam_keluar"))
+            durasi_total_izin = r.get("durasi_total_izin") or "-"
+            durasi_shift = r.get("durasi_shift")
+            if not durasi_shift or durasi_shift == "-":
+                durasi_shift = database.calculate_durasi_shift(
+                    r.get("jam_masuk"),
+                    r.get("jam_keluar"),
+                    riwayat_kelas_list=r.get("riwayat_kelas_list"),
+                    durasi_kelas_str=durasi_kelas,
+                    riwayat_izin_list=r.get("riwayat_izin_list"),
+                    durasi_izin_str=durasi_total_izin
+                )
 
             table_rows.append({
                 "No": idx,
@@ -154,18 +192,25 @@ def render_laporan_view():
                 "Durasi Kelas": durasi_kelas,
                 "Tugas Luar": r.get("jam_bertugas_keluar") or "-",
                 "Kembali Tugas": r.get("jam_kembali") or "-",
+                "Izin Keluar": r.get("display_jam_izin") or "-",
+                "Durasi Izin": durasi_total_izin,
                 "Jam Keluar": r.get("jam_keluar") or "-",
-                "Durasi Total": durasi_kerja,
+                "Durasi Shift": durasi_shift,
                 "Status": r.get("status") or "Hadir"
             })
 
         st.dataframe(table_rows, width="stretch", hide_index=True)
 
-        # Pemeriksa Rincian Sesi Kelas
+        # Pemeriksa Rincian Sesi Kelas & Izin
         st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-        with st.expander("🔍 **Pemeriksa Rincian Sesi Kelas Berdasarkan Catatan**"):
+        with st.expander("🔍 **Pemeriksa Rincian Sesi Kelas & Sesi Izin Berdasarkan Catatan**"):
             inspect_options = [f"Baris #{idx}: {r.get('tanggal')} - {r.get('nama')}" for idx, r in enumerate(records, 1)]
             selected_inspect = st.selectbox("Pilih Catatan untuk Diperiksa:", inspect_options)
             sel_idx = int(selected_inspect.split(":")[0].replace("Baris #", "")) - 1
-            if st.button("Buka Modal Rincian Sesi Kelas"):
-                modal_rincian_laporan(records[sel_idx])
+            exp_col1, exp_col2 = st.columns(2)
+            with exp_col1:
+                if st.button("📚 Buka Rincian Sesi Kelas", use_container_width=True):
+                    modal_rincian_laporan(records[sel_idx])
+            with exp_col2:
+                if st.button("☕ Buka Rincian Sesi Izin", use_container_width=True):
+                    modal_rincian_izin_laporan(records[sel_idx])
