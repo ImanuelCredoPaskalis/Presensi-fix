@@ -4,6 +4,20 @@ Mendukung Multi-Sesi Kelas (Bisa lebih dari 1 kelas dalam 1 hari), Tugas Luar, d
 """
 import sqlite3
 import datetime
+
+try:
+    import zoneinfo
+    WIB_TZ = zoneinfo.ZoneInfo("Asia/Jakarta")
+except Exception:
+    WIB_TZ = datetime.timezone(datetime.timedelta(hours=7), name="WIB")
+
+def get_wib_now():
+    """
+    Mengembalikan objek datetime saat ini dalam Waktu Indonesia Barat (WIB / UTC+7).
+    Memastikan konsistensi waktu di semua platform (Windows, Linux, Mac, Docker/Codespaces).
+    """
+    return datetime.datetime.now(WIB_TZ)
+
 from config import DB_PATH, load_config
 
 def get_connection():
@@ -182,7 +196,7 @@ def add_pegawai(nama, telepon="", email="", jabatan="Mahasiswa", departemen="Pen
         conn.close()
         return True, "Data mahasiswa berhasil ditambahkan!", pegawai_id
     except sqlite3.IntegrityError:
-        clean_nik = f"MHS-{datetime.datetime.now().strftime('%M%S')}"
+        clean_nik = f"MHS-{get_wib_now().strftime('%M%S')}"
         cursor.execute("""
             INSERT INTO pegawai (nik, nama, jabatan, departemen, telepon, email)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -449,10 +463,10 @@ def format_izin_time_display(riwayat_list):
 # ==================== PRESENSI ====================
 
 def get_today_str():
-    return datetime.date.today().strftime("%Y-%m-%d")
+    return get_wib_now().strftime("%Y-%m-%d")
 
 def get_current_time_str():
-    return datetime.datetime.now().strftime("%H:%M:%S")
+    return get_wib_now().strftime("%H:%M:%S")
 
 def get_today_presence_record(pegawai_id):
     today = get_today_str()
@@ -514,18 +528,8 @@ def record_attendance(pegawai_id, action_type, keterangan="", custom_time=None):
             conn.close()
             return False, f"{pegawai['nama']} sudah melakukan presensi MASUK hari ini pukul {existing['jam_masuk']}.", dict(existing)
 
-        # Evaluasi Tepat Waktu vs Terlambat
-        work_start = config.get("work_start_time", "08:00")
-        
+        # Status Masuk: Selalu "Tepat Waktu"
         status = "Tepat Waktu"
-        try:
-            cur_dt = datetime.datetime.strptime(now_time, "%H:%M:%S").time()
-            start_h, start_m = parse_time_setting(work_start, 8, 0)
-            limit_dt = datetime.time(start_h, start_m)
-            if cur_dt > limit_dt:
-                status = "Terlambat"
-        except Exception:
-            status = "Hadir"
 
         if existing:
             cursor.execute("""

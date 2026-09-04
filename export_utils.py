@@ -8,7 +8,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from config import load_config
-from database import calculate_time_diff_hours, calculate_durasi_shift
+from database import calculate_time_diff_hours, calculate_durasi_shift, get_wib_now
 
 def build_excel_workbook(records, start_date=None, end_date=None):
     """
@@ -53,7 +53,7 @@ def build_excel_workbook(records, start_date=None, end_date=None):
         periode_str = f"Mulai Tanggal: {start_date}"
 
     ws.merge_cells("A2:P2")
-    ws["A2"] = f"{periode_str} | Dicetak pada: {datetime.datetime.now().strftime('%d-%m-%Y %H:%M:%S')}"
+    ws["A2"] = f"{periode_str} | Dicetak pada: {get_wib_now().strftime('%d-%m-%Y %H:%M:%S')} WIB"
     ws["A2"].font = font_sub
     ws["A2"].alignment = Alignment(horizontal="center", vertical="center")
 

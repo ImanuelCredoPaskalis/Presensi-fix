@@ -15,6 +15,18 @@ class TestPresensiMahasiswaMultiKelasSystem(unittest.TestCase):
     def setUpClass(cls):
         database.init_db()
 
+    @classmethod
+    def tearDownClass(cls):
+        conn = database.get_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM riwayat_kelas WHERE pegawai_id NOT IN (SELECT id FROM pegawai WHERE nama NOT LIKE 'Mahasiswa%')")
+        cur.execute("DELETE FROM riwayat_izin WHERE pegawai_id NOT IN (SELECT id FROM pegawai WHERE nama NOT LIKE 'Mahasiswa%')")
+        cur.execute("DELETE FROM riwayat_tugas_luar WHERE pegawai_id NOT IN (SELECT id FROM pegawai WHERE nama NOT LIKE 'Mahasiswa%')")
+        cur.execute("DELETE FROM presensi WHERE pegawai_id NOT IN (SELECT id FROM pegawai WHERE nama NOT LIKE 'Mahasiswa%')")
+        cur.execute("DELETE FROM pegawai WHERE nama LIKE 'Mahasiswa%'")
+        conn.commit()
+        conn.close()
+
     def test_01_mahasiswa_crud(self):
         # Add mahasiswa
         success, msg, p_id = database.add_pegawai("Mahasiswa Multi Kelas", telepon="0812999999")
@@ -268,6 +280,32 @@ class TestPresensiMahasiswaMultiKelasSystem(unittest.TestCase):
         # Shift duration = 4j (08:00-12:00) - 1j (izin 11:00-12:00) = 3j 0m
         h2 = database.get_presensi_history(pegawai_id=p2_id)
         self.assertEqual(h2[0]["durasi_shift"], "3j 0m")
+
+    def test_07_wib_timezone_consistency(self):
+        wib_now = database.get_wib_now()
+        # Verifikasi offset WIB adalah +07:00 (7 jam dari UTC)
+        tz_offset = wib_now.utcoffset()
+        self.assertIsNotNone(tz_offset)
+        self.assertEqual(tz_offset.total_seconds(), 7 * 3600)
+
+        # Verifikasi get_today_str dan get_current_time_str sesuai dengan get_wib_now()
+        self.assertEqual(database.get_today_str(), wib_now.strftime("%Y-%m-%d"))
+        time_str = database.get_current_time_str()
+        self.assertEqual(len(time_str), 8)
+        self.assertEqual(time_str[:2], wib_now.strftime("%H"))
+
+        # Test presensi default menggunakan waktu WIB
+        success, msg, p_id = database.add_pegawai("Mahasiswa Test WIB")
+        self.assertTrue(success)
+        conn = database.get_connection()
+        conn.cursor().execute("DELETE FROM presensi WHERE pegawai_id = ? AND tanggal = ?", (p_id, database.get_today_str()))
+        conn.commit()
+        conn.close()
+
+        success, msg, rec = database.record_attendance(p_id, "masuk")
+        self.assertTrue(success)
+        self.assertIn("tercatat pukul", msg)
+        self.assertEqual(len(rec["jam_masuk"]), 8)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

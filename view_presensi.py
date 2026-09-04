@@ -8,7 +8,7 @@ import database
 from config import load_config
 
 def get_indonesian_date_str():
-    now = datetime.datetime.now()
+    now = database.get_wib_now()
     days_id = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
     months_id = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", 
                  "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
@@ -186,12 +186,28 @@ def render_presensi_view():
     <script>
         function updateWebClock() {{
             const now = new Date();
-            const h = String(now.getHours()).padStart(2, '0');
-            const m = String(now.getMinutes()).padStart(2, '0');
-            const s = String(now.getSeconds()).padStart(2, '0');
-            const el = document.getElementById('live-clock');
-            if (el) {{
-                el.innerText = `${{h}}:${{m}}:${{s}}`;
+            try {{
+                const timeStr = new Intl.DateTimeFormat('en-GB', {{
+                    timeZone: 'Asia/Jakarta',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hour12: false
+                }}).format(now);
+                const el = document.getElementById('live-clock');
+                if (el) {{
+                    el.innerText = timeStr;
+                }}
+            }} catch (e) {{
+                const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+                const wibDate = new Date(utc + (3600000 * 7));
+                const h = String(wibDate.getHours()).padStart(2, '0');
+                const m = String(wibDate.getMinutes()).padStart(2, '0');
+                const s = String(wibDate.getSeconds()).padStart(2, '0');
+                const el = document.getElementById('live-clock');
+                if (el) {{
+                    el.innerText = `${{h}}:${{m}}:${{s}}`;
+                }}
             }}
         }}
         updateWebClock();

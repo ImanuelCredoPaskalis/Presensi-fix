@@ -67,7 +67,7 @@ def render_laporan_view():
     all_pegawai = database.get_all_pegawai(only_active=False)
 
     # Inisialisasi filter state
-    today = datetime.date.today()
+    today = database.get_wib_now().date()
     default_start = today - datetime.timedelta(days=30)
     
     if "filter_start_date" not in st.session_state:
@@ -125,7 +125,7 @@ def render_laporan_view():
     )
 
     # Siapkan data ekspor
-    today_stamp = datetime.date.today().strftime("%Y%m%d")
+    today_stamp = database.get_wib_now().strftime("%Y%m%d")
     with h_col2:
         if records:
             excel_bytes = export_utils.get_excel_bytes(records, start_str, end_str)
