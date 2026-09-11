@@ -14,6 +14,16 @@ from view_settings import render_settings_view
 # Pastikan inisialisasi database SQLite
 database.init_db()
 
+# Sinkronisasi awal dari Google Sheets jika aktif (Memulihkan data di Streamlit Cloud)
+try:
+    import sheets_sync
+    if "sheets_synced_on_startup" not in st.session_state:
+        st.session_state["sheets_synced_on_startup"] = True
+        if sheets_sync.is_sheets_enabled():
+            sheets_sync.pull_from_sheets()
+except Exception:
+    pass
+
 # Load Konfigurasi
 config = load_config()
 

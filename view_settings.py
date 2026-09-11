@@ -30,6 +30,7 @@ def modal_reset_database():
                     cur = conn.cursor()
                     cur.execute("DELETE FROM riwayat_kelas")
                     cur.execute("DELETE FROM riwayat_tugas_luar")
+                    cur.execute("DELETE FROM riwayat_izin")
                     cur.execute("DELETE FROM presensi")
                     cur.execute("DELETE FROM pegawai")
                     cur.execute("DELETE FROM sqlite_sequence")
@@ -86,6 +87,91 @@ def render_settings_view():
     theme_idx = 0 if current_theme == "dark" else 1
     selected_theme = st.selectbox("Mode Tema Utama:", ["dark", "light"], index=theme_idx)
 
+    # ================= BAGIAN 4: GOOGLE SHEETS CLOUD INTEGRATION =================
+    st.markdown("#### ☁️ Integrasi Google Sheets (Penyimpanan Cloud Online)")
+    import sheets_sync
+    import os
+
+    sheets_active = sheets_sync.is_sheets_enabled()
+    current_webhook_url = sheets_sync.get_webhook_url()
+
+    if sheets_active:
+        st.success("🟢 **Google Sheets Aktif**: Aplikasi terhubung ke Google Sheets online. Data presensi langsung tercatat permanen di cloud!")
+    else:
+        st.info("🟡 **Mode SQLite Lokal**: Aplikasi saat ini menggunakan database SQLite lokal. Untuk deploy di Streamlit Cloud, hubungkan dengan Google Sheets agar data tidak ter-reset.")
+
+    webhook_input = st.text_input(
+        "URL Webhook Google Apps Script:",
+        value=current_webhook_url,
+        placeholder="https://script.google.com/macros/s/AKfycb.../exec",
+        help="Masukkan URL Webhook yang didapatkan setelah menerapkan Apps Script di Google Sheets Anda."
+    )
+
+    gs_col1, gs_col2, gs_col3 = st.columns(3)
+    with gs_col1:
+        if st.button("🔍 Uji Koneksi Sheets", use_container_width=True):
+            if not webhook_input.strip():
+                st.error("Silakan masukkan URL Webhook terlebih dahulu.")
+            else:
+                sheets_sync.set_webhook_url(webhook_input.strip())
+                ok, msg = sheets_sync.test_connection()
+                if ok:
+                    st.success(f"✅ {msg}")
+                else:
+                    st.error(f"❌ {msg}")
+
+    with gs_col2:
+        if st.button("📥 Tarik Data (Pull dari Sheets)", use_container_width=True):
+            if not webhook_input.strip():
+                st.error("URL Webhook belum diatur.")
+            else:
+                sheets_sync.set_webhook_url(webhook_input.strip())
+                ok, msg, stats = sheets_sync.pull_from_sheets()
+                if ok:
+                    st.success(f"✅ {msg} ({stats})")
+                else:
+                    st.error(f"❌ {msg}")
+
+    with gs_col3:
+        if st.button("📤 Upload Semua ke Sheets (Push All)", use_container_width=True):
+            if not webhook_input.strip():
+                st.error("URL Webhook belum diatur.")
+            else:
+                sheets_sync.set_webhook_url(webhook_input.strip())
+                ok, msg = sheets_sync.push_all_to_sheets()
+                if ok:
+                    st.success(f"✅ {msg}")
+                else:
+                    st.error(f"❌ {msg}")
+
+    # Tombol Download File Excel Migrasi
+    xlsx_path = "migrasi_data_presensi_google_sheets.xlsx"
+    if os.path.exists(xlsx_path):
+        with open(xlsx_path, "rb") as f:
+            xlsx_bytes = f.read()
+        st.download_button(
+            label="📄 Unduh File Migrasi Data Eksisting (.xlsx) untuk Diunggah ke Google Drive",
+            data=xlsx_bytes,
+            file_name="migrasi_data_presensi_google_sheets.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
+    with st.expander("📖 Panduan Singkat Memasang Google Sheets (2 Menit)"):
+        st.markdown("""
+        1. **Unduh file migrasi** di atas (`migrasi_data_presensi_google_sheets.xlsx`).
+        2. Buka [Google Drive](https://drive.google.com) > Klik **Baru (+)** > **Upload File** > Pilih file tersebut.
+        3. Buka file tersebut dengan **Google Spreadsheet**.
+        4. Di menu Google Sheets, klik **Ekstensi (Extensions)** > **Apps Script**.
+        5. Salin dan tempelkan isi file `google_apps_script.js` (ada di folder proyek ini) ke dalam editor script.
+        6. Klik **Terapkan (Deploy)** > **Penerapan Baru (New Deployment)**:
+           - Jenis: **Aplikasi Web (Web App)**
+           - Jalankan sebagai: **Saya**
+           - Siapa yang memiliki akses: **Siapa saja (Anyone)**
+        7. Klik **Terapkan**, lalu salin **URL Aplikasi Web** yang dihasilkan.
+        8. Tempelkan URL tersebut pada kotak input di atas (atau di menu **Settings > Secrets** pada dashboard Streamlit Community Cloud).
+        """)
+
     st.markdown("---")
 
     # ================= TOMBOL AKSI =================
@@ -99,6 +185,7 @@ def render_settings_view():
             new_config["work_end_time"] = work_end.strip()
             new_config.pop("late_tolerance_minutes", None)
             new_config["theme_mode"] = selected_theme
+            new_config["gsheets_webhook_url"] = webhook_input.strip()
 
             if save_config(new_config):
                 st.session_state["settings_alert"] = {

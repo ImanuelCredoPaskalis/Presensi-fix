@@ -72,5 +72,38 @@ streamlit run web_app.py
 
 ---
 
-## 🗄️ Database Lokal (SQLite)
-Database disimpan lokal di file `presensi.db` tanpa memerlukan koneksi internet ataupun server database terpisah.
+## 🗄️ Penyimpanan Data: Mode Ganda (Google Sheets Cloud & SQLite Lokal)
+
+Aplikasi ini mendukung **penyimpanan hybrid berkecepatan tinggi**:
+1. **Google Sheets (Cloud Online)**:
+   - Data otomatis tersinkronisasi dua arah secara *real-time* ke **Google Spreadsheet** di Google Drive Anda.
+   - Siapapun yang presensi dari HP/laptop melalui link Streamlit Cloud, datanya langsung tercatat permanen di Google Sheets.
+   - Tidak akan hilang meski server Streamlit Cloud tertidur (*sleep*) atau di-restart.
+2. **SQLite Lokal (`presensi.db`)**:
+   - Berfungsi sebagai *local cache* berkecepatan tinggi sehingga antarmuka Streamlit berjalan instan tanpa jeda loading.
+   - Tetap dapat digunakan 100% secara *offline* di laptop/komputer lab tanpa internet.
+
+---
+
+## ☁️ Cara Menghubungkan Google Sheets (Hanya 2 Menit)
+
+1. Buka [Google Drive](https://drive.google.com), lalu unggah file:
+   ```text
+   migrasi_data_presensi_google_sheets.xlsx
+   ```
+   *(Seluruh data 5 mahasiswa dan 39 riwayat presensi yang sudah ada akan otomatis masuk)*.
+2. Buka file tersebut dengan **Google Spreadsheet**.
+3. Klik menu **Ekstensi (Extensions)** > **Apps Script**.
+4. Hapus semua kode default, lalu tempel (paste) seluruh isi file [`google_apps_script.js`](./google_apps_script.js).
+5. Klik **Terapkan (Deploy)** > **Penerapan Baru (New Deployment)**:
+   - Pilih jenis: **Aplikasi Web (Web App)**
+   - Jalankan sebagai: **Saya (Email Anda)**
+   - Siapa yang memiliki akses: **Siapa saja (Anyone)**
+6. Klik **Terapkan**, lalu salin **URL Aplikasi Web** yang muncul.
+7. Tempelkan URL tersebut ke:
+   - Menu **Pengaturan** di dalam aplikasi, ATAU
+   - Di menu **Settings > Secrets** di Streamlit Community Cloud:
+     ```toml
+     gsheets_webhook_url = "https://script.google.com/macros/s/AKfycb.../exec"
+     ```
+

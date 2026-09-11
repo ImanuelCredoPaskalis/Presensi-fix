@@ -133,6 +133,55 @@ def init_db():
     conn.commit()
     conn.close()
 
+# ==================== GOOGLE SHEETS REAL-TIME SYNC ====================
+
+def _sync_to_sheets_pegawai(pegawai_id):
+    try:
+        import sheets_sync
+        if sheets_sync.is_sheets_enabled():
+            p = get_pegawai_by_id(pegawai_id)
+            if p:
+                sheets_sync.sync_row_async("mahasiswa", dict(p), key="id")
+    except Exception:
+        pass
+
+def _sync_to_sheets_attendance(pegawai_id, today, action_type, presensi_dict):
+    try:
+        import sheets_sync
+        if not sheets_sync.is_sheets_enabled():
+            return
+
+        if presensi_dict:
+            clean_p = {
+                k: presensi_dict.get(k) for k in [
+                    "id", "pegawai_id", "tanggal", "jam_masuk", "jam_masuk_kelas", "jam_kembali_kelas",
+                    "keterangan_kelas", "jam_bertugas_keluar", "jam_kembali", "jam_izin_keluar",
+                    "jam_kembali_izin", "keterangan_izin", "jam_keluar", "keterangan_tugas", "status", "catatan", "updated_at"
+                ] if k in presensi_dict
+            }
+            sheets_sync.sync_row_async("presensi", clean_p, key="id")
+
+        if action_type in ("kelas", "kembali_kelas", "keluar"):
+            rk_list = get_riwayat_kelas_today(pegawai_id, today)
+            for rk in rk_list:
+                sheets_sync.sync_row_async("riwayat_kelas", dict(rk), key="id")
+
+        if action_type in ("izin_keluar", "kembali_shift", "keluar"):
+            ri_list = get_riwayat_izin_today(pegawai_id, today)
+            for ri in ri_list:
+                sheets_sync.sync_row_async("riwayat_izin", dict(ri), key="id")
+
+        if action_type in ("tugas_keluar", "kembali", "keluar"):
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM riwayat_tugas_luar WHERE pegawai_id = ? AND tanggal = ?", (pegawai_id, today))
+            rt_list = [dict(r) for r in cur.fetchall()]
+            conn.close()
+            for rt in rt_list:
+                sheets_sync.sync_row_async("riwayat_tugas_luar", rt, key="id")
+    except Exception:
+        pass
+
 # ==================== MAHASISWA CRUD ====================
 
 def get_all_pegawai(only_active=True, search_query=None, departemen=None):
@@ -194,6 +243,7 @@ def add_pegawai(nama, telepon="", email="", jabatan="Mahasiswa", departemen="Pen
         conn.commit()
         pegawai_id = cursor.lastrowid
         conn.close()
+        _sync_to_sheets_pegawai(pegawai_id)
         return True, "Data mahasiswa berhasil ditambahkan!", pegawai_id
     except sqlite3.IntegrityError:
         clean_nik = f"MHS-{get_wib_now().strftime('%M%S')}"
@@ -204,6 +254,7 @@ def add_pegawai(nama, telepon="", email="", jabatan="Mahasiswa", departemen="Pen
         conn.commit()
         pegawai_id = cursor.lastrowid
         conn.close()
+        _sync_to_sheets_pegawai(pegawai_id)
         return True, "Data mahasiswa berhasil ditambahkan!", pegawai_id
     except Exception as e:
         conn.close()
@@ -228,6 +279,7 @@ def update_pegawai(pegawai_id, nama, telepon="", email="", jabatan="Mahasiswa", 
         """, (clean_nik, clean_nama, jabatan.strip(), departemen.strip(), telepon.strip(), email.strip(), status_aktif, pegawai_id))
         conn.commit()
         conn.close()
+        _sync_to_sheets_pegawai(pegawai_id)
         return True, "Data mahasiswa berhasil diperbarui!"
     except Exception as e:
         conn.close()
@@ -243,11 +295,17 @@ def delete_pegawai(pegawai_id):
             cursor.execute("UPDATE pegawai SET status_aktif = 0 WHERE id = ?", (pegawai_id,))
             conn.commit()
             conn.close()
+            _sync_to_sheets_pegawai(pegawai_id)
             return True, "Mahasiswa memiliki riwayat presensi, status diubah menjadi Non-Aktif."
         else:
             cursor.execute("DELETE FROM pegawai WHERE id = ?", (pegawai_id,))
             conn.commit()
             conn.close()
+            try:
+                import sheets_sync
+                sheets_sync.sync_delete_async("mahasiswa", "id", pegawai_id)
+            except Exception:
+                pass
             return True, "Data mahasiswa berhasil dihapus permanen."
     except Exception as e:
         conn.close()
@@ -857,6 +915,10 @@ def record_attendance(pegawai_id, action_type, keterangan="", custom_time=None):
     updated_record = cursor.fetchone()
     res_dict = dict(updated_record) if updated_record else None
     conn.close()
+
+    # Sinkronkan ke Google Sheets jika aktif
+    _sync_to_sheets_attendance(pegawai_id, today, action_type, res_dict)
+
     return True, msg, res_dict
 
 # ==================== SUMMARY & STATISTIK ====================
