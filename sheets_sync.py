@@ -27,6 +27,18 @@ def get_webhook_url():
     cfg = load_config()
     return cfg.get("gsheets_webhook_url", "").strip()
 
+def is_from_secrets():
+    """
+    Mengecek apakah Webhook URL dikonfigurasi melalui Streamlit Secrets (bukan config.json lokal).
+    """
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and "gsheets_webhook_url" in st.secrets:
+            return bool(str(st.secrets["gsheets_webhook_url"]).strip())
+    except Exception:
+        pass
+    return False
+
 def set_webhook_url(url):
     """
     Menyimpan Webhook URL ke config.json.

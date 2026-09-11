@@ -1,10 +1,20 @@
 """
 View Web: Pengaturan Jam & Konfigurasi Sistem Presensi Mahasiswa
-Simpan Konfigurasi dan Reset Database dengan Konfirmasi Ganda
+Simpan Konfigurasi, Integrasi Aman Google Sheets, dan Proteksi PIN Admin
 """
 import streamlit as st
 from config import load_config, save_config
 import database
+import sheets_sync
+import os
+
+def get_admin_pin(config):
+    try:
+        if hasattr(st, "secrets") and "admin_pin" in st.secrets:
+            return str(st.secrets["admin_pin"]).strip()
+    except Exception:
+        pass
+    return str(config.get("admin_pin", "admin123")).strip()
 
 @st.dialog("⚠️ Konfirmasi Reset Database")
 def modal_reset_database():
@@ -14,7 +24,8 @@ def modal_reset_database():
         "Tindakan ini akan menghapus permanen:\n"
         "- Seluruh daftar mahasiswa\n"
         "- Seluruh riwayat presensi harian\n"
-        "- Seluruh riwayat sesi kelas & tugas luar\n\n"
+        "- Seluruh riwayat sesi kelas & tugas luar\n"
+        "- Seluruh riwayat sesi izin\n\n"
         "Database akan kembali kosong bersih seperti baru."
     )
     confirm_text = st.text_input("Ketik **RESET** untuk konfirmasi penghapusan:", placeholder="RESET")
@@ -49,9 +60,39 @@ def modal_reset_database():
             st.rerun()
 
 def render_settings_view():
-    st.markdown("### ⚙️ Pengaturan Aplikasi Presensi Mahasiswa")
-
     config = load_config()
+
+    # ================= 0. PROTEKSI PIN ADMIN =================
+    if not st.session_state.get("admin_authenticated", False):
+        st.markdown("### 🔒 Akses Pengaturan Dibatasi")
+        st.caption("Halaman Pengaturan & Konfigurasi Sistem hanya dapat diakses oleh Pengelola / Administrator Lab.")
+        
+        col_p1, col_p2 = st.columns([3, 1])
+        with col_p1:
+            input_pin = st.text_input(
+                "Masukkan PIN Admin:", 
+                type="password", 
+                placeholder="Masukkan PIN Admin (Bawaan: admin123)",
+                key="settings_pin_prompt"
+            )
+        with col_p2:
+            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+            if st.button("🔓 Buka Akses", type="primary", use_container_width=True):
+                if input_pin.strip() == get_admin_pin(config):
+                    st.session_state["admin_authenticated"] = True
+                    st.rerun()
+                else:
+                    st.error("⚠️ PIN Admin salah! Akses ditolak.")
+        return
+
+    # Header Bar (dengan tombol Kunci Kembali)
+    h_col1, h_col2 = st.columns([7, 3])
+    with h_col1:
+        st.markdown("### ⚙️ Pengaturan Aplikasi Presensi Mahasiswa")
+    with h_col2:
+        if st.button("🔒 Kunci / Keluar Admin", use_container_width=True):
+            st.session_state["admin_authenticated"] = False
+            st.rerun()
 
     if "settings_alert" in st.session_state:
         alert_data = st.session_state["settings_alert"]
@@ -81,68 +122,78 @@ def render_settings_view():
 
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
 
-    # ================= BAGIAN 3: TEMA =================
-    st.markdown("#### 🎨 Preferensi Tampilan")
-    current_theme = config.get("theme_mode", "dark")
-    theme_idx = 0 if current_theme == "dark" else 1
-    selected_theme = st.selectbox("Mode Tema Utama:", ["dark", "light"], index=theme_idx)
+    # ================= BAGIAN 3: TEMA & KEAMANAN =================
+    st.markdown("#### 🎨 Tampilan & Keamanan PIN")
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        current_theme = config.get("theme_mode", "dark")
+        theme_idx = 0 if current_theme == "dark" else 1
+        selected_theme = st.selectbox("Mode Tema Utama:", ["dark", "light"], index=theme_idx)
+    with col_t2:
+        current_pin = config.get("admin_pin", "admin123")
+        new_pin_input = st.text_input("Ganti PIN Admin (Bawaan: admin123):", value=current_pin, type="password")
+
+    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
 
     # ================= BAGIAN 4: GOOGLE SHEETS CLOUD INTEGRATION =================
     st.markdown("#### ☁️ Integrasi Google Sheets (Penyimpanan Cloud Online)")
-    import sheets_sync
-    import os
 
     sheets_active = sheets_sync.is_sheets_enabled()
-    current_webhook_url = sheets_sync.get_webhook_url()
+    from_secrets = sheets_sync.is_from_secrets()
+    webhook_url_effective = sheets_sync.get_webhook_url()
 
-    if sheets_active:
-        st.success("🟢 **Google Sheets Aktif**: Aplikasi terhubung ke Google Sheets online. Data presensi langsung tercatat permanen di cloud!")
+    if from_secrets:
+        st.success("🟢 **Google Sheets Terhubung Aman via Streamlit Secrets**")
+        st.caption("🔒 *URL Webhook API dikelola secara privat di server Streamlit Secrets dan TIDAK PERNAH diekspos ke publik/browser pengguna.*")
+        webhook_to_save = webhook_url_effective
+    elif sheets_active:
+        st.success("🟢 **Google Sheets Terhubung (Mode Lokal)**")
+        with st.expander("⚙️ Konfigurasi URL Webhook (Disamarkan)"):
+            webhook_custom = st.text_input(
+                "Ganti URL Webhook Google Apps Script:",
+                value="",
+                type="password",
+                placeholder="••••••••••••••••••••••••••••••••••••••••",
+                help="URL Webhook disamarkan demi privasi dan keamanan."
+            )
+            webhook_to_save = webhook_custom.strip() if webhook_custom.strip() else webhook_url_effective
     else:
-        st.info("🟡 **Mode SQLite Lokal**: Aplikasi saat ini menggunakan database SQLite lokal. Untuk deploy di Streamlit Cloud, hubungkan dengan Google Sheets agar data tidak ter-reset.")
+        st.info("🟡 **Mode SQLite Lokal**: Aplikasi saat ini berjalan secara lokal. Hubungkan Google Sheets jika ingin sinkronisasi online.")
+        with st.expander("⚙️ Hubungkan Google Sheets (Lokal/Manual)"):
+            webhook_custom = st.text_input(
+                "URL Webhook Google Apps Script:",
+                value="",
+                type="password",
+                placeholder="https://script.google.com/macros/s/.../exec",
+                help="Masukkan URL Webhook yang didapatkan dari Google Sheets. Input disamarkan demi keamanan."
+            )
+            webhook_to_save = webhook_custom.strip()
 
-    webhook_input = st.text_input(
-        "URL Webhook Google Apps Script:",
-        value=current_webhook_url,
-        placeholder="https://script.google.com/macros/s/AKfycb.../exec",
-        help="Masukkan URL Webhook yang didapatkan setelah menerapkan Apps Script di Google Sheets Anda."
-    )
-
+    # Tombol Kontrol Sinkronisasi (Hanya untuk Admin)
     gs_col1, gs_col2, gs_col3 = st.columns(3)
     with gs_col1:
         if st.button("🔍 Uji Koneksi Sheets", use_container_width=True):
-            if not webhook_input.strip():
-                st.error("Silakan masukkan URL Webhook terlebih dahulu.")
+            ok, msg = sheets_sync.test_connection()
+            if ok:
+                st.success(f"✅ {msg}")
             else:
-                sheets_sync.set_webhook_url(webhook_input.strip())
-                ok, msg = sheets_sync.test_connection()
-                if ok:
-                    st.success(f"✅ {msg}")
-                else:
-                    st.error(f"❌ {msg}")
+                st.error(f"❌ {msg}")
 
     with gs_col2:
         if st.button("📥 Tarik Data (Pull dari Sheets)", use_container_width=True):
-            if not webhook_input.strip():
-                st.error("URL Webhook belum diatur.")
+            ok, msg, stats = sheets_sync.pull_from_sheets()
+            if ok:
+                st.success(f"✅ {msg} ({stats})")
             else:
-                sheets_sync.set_webhook_url(webhook_input.strip())
-                ok, msg, stats = sheets_sync.pull_from_sheets()
-                if ok:
-                    st.success(f"✅ {msg} ({stats})")
-                else:
-                    st.error(f"❌ {msg}")
+                st.error(f"❌ {msg}")
 
     with gs_col3:
         if st.button("📤 Upload Semua ke Sheets (Push All)", use_container_width=True):
-            if not webhook_input.strip():
-                st.error("URL Webhook belum diatur.")
+            ok, msg = sheets_sync.push_all_to_sheets()
+            if ok:
+                st.success(f"✅ {msg}")
             else:
-                sheets_sync.set_webhook_url(webhook_input.strip())
-                ok, msg = sheets_sync.push_all_to_sheets()
-                if ok:
-                    st.success(f"✅ {msg}")
-                else:
-                    st.error(f"❌ {msg}")
+                st.error(f"❌ {msg}")
 
     # Tombol Download File Excel Migrasi
     xlsx_path = "migrasi_data_presensi_google_sheets.xlsx"
@@ -157,21 +208,6 @@ def render_settings_view():
             use_container_width=True
         )
 
-    with st.expander("📖 Panduan Singkat Memasang Google Sheets (2 Menit)"):
-        st.markdown("""
-        1. **Unduh file migrasi** di atas (`migrasi_data_presensi_google_sheets.xlsx`).
-        2. Buka [Google Drive](https://drive.google.com) > Klik **Baru (+)** > **Upload File** > Pilih file tersebut.
-        3. Buka file tersebut dengan **Google Spreadsheet**.
-        4. Di menu Google Sheets, klik **Ekstensi (Extensions)** > **Apps Script**.
-        5. Salin dan tempelkan isi file `google_apps_script.js` (ada di folder proyek ini) ke dalam editor script.
-        6. Klik **Terapkan (Deploy)** > **Penerapan Baru (New Deployment)**:
-           - Jenis: **Aplikasi Web (Web App)**
-           - Jalankan sebagai: **Saya**
-           - Siapa yang memiliki akses: **Siapa saja (Anyone)**
-        7. Klik **Terapkan**, lalu salin **URL Aplikasi Web** yang dihasilkan.
-        8. Tempelkan URL tersebut pada kotak input di atas (atau di menu **Settings > Secrets** pada dashboard Streamlit Community Cloud).
-        """)
-
     st.markdown("---")
 
     # ================= TOMBOL AKSI =================
@@ -185,7 +221,11 @@ def render_settings_view():
             new_config["work_end_time"] = work_end.strip()
             new_config.pop("late_tolerance_minutes", None)
             new_config["theme_mode"] = selected_theme
-            new_config["gsheets_webhook_url"] = webhook_input.strip()
+            new_config["admin_pin"] = new_pin_input.strip() if new_pin_input.strip() else "admin123"
+
+            # Jangan ubah webhook jika sedang dikelola via Streamlit Secrets
+            if not from_secrets:
+                new_config["gsheets_webhook_url"] = webhook_to_save
 
             if save_config(new_config):
                 st.session_state["settings_alert"] = {
