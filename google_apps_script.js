@@ -1,20 +1,6 @@
 /**
  * Google Apps Script - Webhook API untuk Sistem Presensi Mahasiswa & Kelas
- * 
- * CARA MEMASANG DI GOOGLE SHEETS:
- * 1. Buat Google Spreadsheet baru (atau Import file migrasi_data_presensi_google_sheets.xlsx).
- * 2. Klik menu: Ekstensi (Extensions) > Apps Script.
- * 3. Hapus semua kode default, lalu tempel (paste) seluruh isi file ini.
- * 4. Klik ikon Simpan (Disk) di atas.
- * 5. Klik tombol biru "Terapkan" (Deploy) > "Penerapan baru" (New deployment).
- * 6. Pilih jenis: "Aplikasi Web" (Web app).
- * 7. Setel:
- *    - Deskripsi: API Presensi Lab
- *    - Jalankan sebagai: Saya (email Anda)
- *    - Siapa yang memiliki akses: Siapa saja (Anyone)
- * 8. Klik "Terapkan" (Deploy) dan izinkan akses akun Google Anda.
- * 9. Salin (Copy) "URL Aplikasi Web" (contoh: https://script.google.com/macros/s/.../exec).
- * 10. Tempelkan URL tersebut ke Pengaturan Aplikasi Presensi atau secrets.toml!
+ * Sinkronisasi dua arah SQLite <-> Google Sheets.
  */
 
 function doGet(e) {
@@ -22,27 +8,21 @@ function doGet(e) {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var params = e ? e.parameter : {};
     var action = params.action || "get_all";
-    
+
     if (action === "ping") {
       return jsonResponse({ status: "success", message: "Google Apps Script Presensi aktif!", title: ss.getName() });
     }
-    
+
     if (action === "get_all") {
       var result = {};
       var sheetNames = ["mahasiswa", "presensi", "riwayat_kelas", "riwayat_izin", "riwayat_tugas_luar"];
-      
       sheetNames.forEach(function(name) {
         var sheet = ss.getSheetByName(name);
-        if (sheet) {
-          result[name] = getSheetData(sheet);
-        } else {
-          result[name] = [];
-        }
+        result[name] = sheet ? getSheetData(sheet) : [];
       });
-      
       return jsonResponse({ status: "success", data: result });
     }
-    
+
     if (action === "get_table") {
       var tableName = params.table;
       var sheet = ss.getSheetByName(tableName);
@@ -51,7 +31,7 @@ function doGet(e) {
       }
       return jsonResponse({ status: "success", data: getSheetData(sheet) });
     }
-    
+
     return jsonResponse({ status: "error", message: "Action tidak dikenal: " + action });
   } catch (err) {
     return jsonResponse({ status: "error", message: err.toString() });
@@ -61,50 +41,47 @@ function doGet(e) {
 function doPost(e) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
+    if (!e || !e.postData || !e.postData.contents) {
+      return jsonResponse({ status: "error", message: "Body POST kosong." });
+    }
+
     var postData = JSON.parse(e.postData.contents);
     var action = postData.action;
 
-    // 1. Sinkronisasi seluruh tabel sekaligus (Migrasi Awal)
     if (action === "sync_all") {
       var tables = postData.tables || {};
       for (var tableName in tables) {
-        var rows = tables[tableName];
-        writeFullTable(ss, tableName, rows);
+        writeFullTable(ss, tableName, tables[tableName]);
       }
       return jsonResponse({ status: "success", message: "Semua tabel berhasil disinkronkan ke Google Sheets." });
     }
 
-    // 2. Tambah / Perbarui baris (Upsert)
     if (action === "upsert_row") {
       var tableName = postData.table;
       var keyField = postData.key || "id";
-      var rowData = postData.row;
+      var rowData = postData.row || {};
+      if (!tableName || Object.keys(rowData).length === 0) {
+        return jsonResponse({ status: "error", message: "Table atau row tidak valid." });
+      }
       var sheet = getOrCreateSheet(ss, tableName);
-
       upsertRowInSheet(sheet, keyField, rowData);
       return jsonResponse({ status: "success", message: "Baris berhasil di-upsert di sheet " + tableName });
     }
 
-    // 3. Tambah baris baru saja (Append)
     if (action === "append_row") {
       var tableName = postData.table;
-      var rowData = postData.row;
+      var rowData = postData.row || {};
       var sheet = getOrCreateSheet(ss, tableName);
-
       appendRowToSheet(sheet, rowData);
       return jsonResponse({ status: "success", message: "Baris baru berhasil ditambahkan di sheet " + tableName });
     }
 
-    // 4. Hapus baris berdasarkan key
     if (action === "delete_row") {
       var tableName = postData.table;
       var keyField = postData.key || "id";
       var keyValue = postData.value;
       var sheet = ss.getSheetByName(tableName);
-
-      if (sheet) {
-        deleteRowInSheet(sheet, keyField, keyValue);
-      }
+      if (sheet) deleteRowInSheet(sheet, keyField, keyValue);
       return jsonResponse({ status: "success", message: "Baris berhasil dihapus dari sheet " + tableName });
     }
 
@@ -114,34 +91,36 @@ function doPost(e) {
   }
 }
 
-// ================= FUNGSI BANTU =================
-
 function getSheetData(sheet) {
   var data = sheet.getDataRange().getValues();
+  if (data.length === 0) return [];
+
+  // Sheet baru/kosong kadang tetap menghasilkan satu sel kosong.
+  if (data.length === 1 && data[0].length === 1 && String(data[0][0]).trim() === "") return [];
   if (data.length <= 1) return [];
+
   var headers = data[0];
   var rows = [];
-
   for (var i = 1; i < data.length; i++) {
     var rowObj = {};
+    var hasValue = false;
     for (var j = 0; j < headers.length; j++) {
+      if (!headers[j]) continue;
       var val = data[i][j];
+      if (val !== "" && val !== null) hasValue = true;
       if (val instanceof Date) {
         val = Utilities.formatDate(val, "Asia/Jakarta", "yyyy-MM-dd HH:mm:ss");
       }
-      rowObj[headers[j]] = val;
+      rowObj[String(headers[j])] = val;
     }
-    rows.push(rowObj);
+    if (hasValue) rows.push(rowObj);
   }
   return rows;
 }
 
 function getOrCreateSheet(ss, name) {
   var sheet = ss.getSheetByName(name);
-  if (!sheet) {
-    sheet = ss.insertSheet(name);
-  }
-  return sheet;
+  return sheet || ss.insertSheet(name);
 }
 
 function writeFullTable(ss, name, rows) {
@@ -151,7 +130,6 @@ function writeFullTable(ss, name, rows) {
 
   var headers = Object.keys(rows[0]);
   var allData = [headers];
-
   for (var i = 0; i < rows.length; i++) {
     var r = [];
     for (var j = 0; j < headers.length; j++) {
@@ -162,18 +140,35 @@ function writeFullTable(ss, name, rows) {
   }
 
   sheet.getRange(1, 1, allData.length, headers.length).setValues(allData);
-  sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setBackground("#1E40AF").setFontColor("#FFFFFF");
+  formatHeader(sheet, headers.length);
+}
+
+function ensureHeaders(sheet, rowData) {
+  var range = sheet.getDataRange();
+  var values = range.getValues();
+
+  // Spreadsheet kosong: buat header berdasarkan field row yang dikirim.
+  if (values.length === 1 && values[0].length === 1 && String(values[0][0]).trim() === "") {
+    var headers = Object.keys(rowData);
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    formatHeader(sheet, headers.length);
+    return headers;
+  }
+
+  return values[0];
+}
+
+function formatHeader(sheet, count) {
+  if (count > 0) {
+    sheet.getRange(1, 1, 1, count)
+      .setFontWeight("bold")
+      .setBackground("#1E40AF")
+      .setFontColor("#FFFFFF");
+  }
 }
 
 function appendRowToSheet(sheet, rowData) {
-  var dataRange = sheet.getDataRange();
-  var headers = dataRange.getValues()[0];
-  if (!headers || headers.length === 0) {
-    headers = Object.keys(rowData);
-    sheet.appendRow(headers);
-    sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setBackground("#1E40AF").setFontColor("#FFFFFF");
-  }
-
+  var headers = ensureHeaders(sheet, rowData);
   var newRow = [];
   for (var j = 0; j < headers.length; j++) {
     var val = rowData[headers[j]];
@@ -184,7 +179,8 @@ function appendRowToSheet(sheet, rowData) {
 
 function upsertRowInSheet(sheet, keyField, rowData) {
   var data = sheet.getDataRange().getValues();
-  if (data.length <= 1) {
+  var emptySheet = data.length === 1 && data[0].length === 1 && String(data[0][0]).trim() === "";
+  if (emptySheet) {
     appendRowToSheet(sheet, rowData);
     return;
   }
@@ -198,28 +194,21 @@ function upsertRowInSheet(sheet, keyField, rowData) {
 
   var targetVal = String(rowData[keyField]);
   var rowIndex = -1;
-
   for (var i = 1; i < data.length; i++) {
     if (String(data[i][keyIdx]) === targetVal) {
-      rowIndex = i + 1; // 1-indexed for Sheet row
+      rowIndex = i + 1;
       break;
     }
   }
 
   if (rowIndex > 0) {
-    // Update baris
     var updatedRow = [];
     for (var j = 0; j < headers.length; j++) {
       var val = rowData[headers[j]];
-      if (val === undefined || val === null) {
-        updatedRow.push(data[rowIndex - 1][j]); // pertahankan nilai lama jika tidak disediakan
-      } else {
-        updatedRow.push(String(val));
-      }
+      updatedRow.push(val === undefined || val === null ? data[rowIndex - 1][j] : String(val));
     }
     sheet.getRange(rowIndex, 1, 1, headers.length).setValues([updatedRow]);
   } else {
-    // Tambah baru
     appendRowToSheet(sheet, rowData);
   }
 }
