@@ -141,7 +141,12 @@ def modal_rincian_sesi_kelas(pegawai):
 
 def render_presensi_view():
     config = load_config()
-    
+
+    # Cek koneksi Google Sheets
+    if not database.is_connection_ok():
+        st.warning("⚠️ **Google Sheets belum terhubung!** Pastikan URL Webhook sudah diatur di **Pengaturan**.")
+        st.stop()
+
     # Inisialisasi state presensi
     if "selected_pegawai_id" not in st.session_state:
         st.session_state["selected_pegawai_id"] = None

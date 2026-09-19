@@ -64,6 +64,11 @@ def modal_rincian_izin_laporan(presensi_record):
         st.rerun()
 
 def render_laporan_view():
+    # Cek koneksi Google Sheets
+    if not database.is_connection_ok():
+        st.warning("⚠️ **Google Sheets belum terhubung!** Pastikan URL Webhook sudah diatur di **Pengaturan**.")
+        st.stop()
+
     all_pegawai = database.get_all_pegawai(only_active=False)
 
     # Inisialisasi filter state

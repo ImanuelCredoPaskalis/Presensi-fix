@@ -57,10 +57,8 @@ def _refresh_cache():
 def _get_cache():
     """
     Dapatkan data dari cache. Jika cache kosong atau kedaluwarsa, refresh.
-    Mengembalikan dict {sheet_name: [rows]} atau {} jika gagal.
+    Selalu coba fetch jika ada URL webhook.
     """
-    if not is_sheets_enabled():
-        return {}
     if _is_cache_stale() or not _SHEETS_CACHE:
         _refresh_cache()
     return _SHEETS_CACHE
@@ -220,11 +218,12 @@ def _call_sheets(action, params=None, json_body=None):
 
 def init_db():
     """
-    Inisialisasi database. Mengambil data dari Google Sheets dan menyimpan di cache.
-    Jika webhook belum diatur, tampilkan pesan peringatan.
+    Inisialisasi database. Mengambil data dari Google Sheets ke cache.
+    Selalu coba fetch jika ada URL webhook.
     """
     global _SHEETS_CACHE, _CACHE_TIMESTAMP
-    if not is_sheets_enabled():
+    url = get_webhook_url()
+    if not url:
         print("⚠️ Google Sheets Webhook URL belum diatur.")
         print("   Data tidak dapat ditampilkan. Atur URL webhook di Pengaturan.")
         _SHEETS_CACHE = {}
@@ -232,10 +231,19 @@ def init_db():
     else:
         success = _refresh_cache()
         if success:
-            print(f"✅ Google Sheets terhubung. Data dimuat ({sum(len(v) for v in _SHEETS_CACHE.values())} total baris).")
+            total = sum(len(v) for v in _SHEETS_CACHE.values())
+            print(f"✅ Google Sheets terhubung. Data dimuat ({total} total baris).")
         else:
-            print("⚠️ Gagal terhubung ke Google Sheets. Periksa URL Webhook.")
+            print("⚠️ Gagal terhubung ke Google Sheets. Periksa URL Webhook di Pengaturan.")
+            _SHEETS_CACHE = {}
+            _CACHE_TIMESTAMP = None
 
+def is_connection_ok():
+    """Periksa apakah koneksi Google Sheets aktif dan data tersedia."""
+    url = get_webhook_url()
+    if not url:
+        return False
+    return _refresh_cache()
 
 # ===================== DATA ACCESS LAYER =====================
 

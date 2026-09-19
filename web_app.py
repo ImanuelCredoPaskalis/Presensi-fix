@@ -11,8 +11,13 @@ from view_pegawai import render_pegawai_view
 from view_laporan import render_laporan_view
 from view_settings import render_settings_view
 
-# Pastikan koneksi Google Sheets terkonfigurasi
+# Pastikan koneksi Google Sheets terkonfigurasi dan data dimuat
 database.init_db()
+
+# Cek status koneksi dan tampilkan
+conn_ok = database.is_connection_ok()
+if not conn_ok:
+    st.warning("⚠️ **Google Sheets belum terhubung!** Pastikan URL Webhook sudah diatur di **Pengaturan**.")
 
 # Load Konfigurasi
 config = load_config()
@@ -137,6 +142,12 @@ st.markdown(custom_css, unsafe_allow_html=True)
 with st.sidebar:
     st.markdown('<div class="sidebar-brand-title">⚡ PRESENSI MAHASISWA</div>', unsafe_allow_html=True)
     st.markdown('<div class="sidebar-brand-sub">Sistem Presensi & Kelas Mahasiswa</div>', unsafe_allow_html=True)
+
+    # Status koneksi di sidebar
+    if conn_ok:
+        st.success("🟢 Google Sheets Terhubung")
+    else:
+        st.error("🔴 Google Sheets Belum Terhubung")
 
     nav_options = [
         "🕒  Presensi Mahasiswa",

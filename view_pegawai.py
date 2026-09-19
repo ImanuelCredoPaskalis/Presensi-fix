@@ -93,6 +93,11 @@ def modal_hapus_mahasiswa(all_pegawai):
                 st.rerun()
 
 def render_pegawai_view():
+    # Cek koneksi Google Sheets
+    if not database.is_connection_ok():
+        st.warning("⚠️ **Google Sheets belum terhubung!** Pastikan URL Webhook sudah diatur di **Pengaturan**.")
+        st.stop()
+
     all_pegawai = database.get_all_pegawai(only_active=False)
 
     # Header & Action buttons

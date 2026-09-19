@@ -6,6 +6,11 @@ import streamlit as st
 import database
 
 def render_dashboard_view():
+    # Cek koneksi Google Sheets
+    if not database.is_connection_ok():
+        st.warning("⚠️ **Google Sheets belum terhubung!** Pastikan URL Webhook sudah diatur di **Pengaturan**.")
+        st.stop()
+
     # Header bar
     h_col1, h_col2 = st.columns([8, 2])
     with h_col1:
@@ -16,6 +21,10 @@ def render_dashboard_view():
 
     # Ambil data summary
     summary = database.get_today_summary()
+
+    # Jika tidak ada data mahasiswa sama sekali
+    if summary["total_pegawai"] == 0:
+        st.warning("⚠️ Tidak ada data mahasiswa terdaftar. Pastikan data mahasiswa sudah ada di Google Sheets.")
 
     # ================= 7 KARTU METRIK KEHADIRAN =================
     m_col1, m_col2, m_col3, m_col4, m_col5, m_col6, m_col7 = st.columns(7)
@@ -70,7 +79,10 @@ def render_dashboard_view():
         records = [r for r in records if sq in r["nama"].lower()]
 
     if not records:
-        st.info("Tidak ada data presensi yang sesuai dengan kriteria.")
+        if search_q.strip():
+            st.info("Tidak ada data presensi yang sesuai dengan kriteria pencarian.")
+        else:
+            st.info("Belum ada data presensi hari ini. Pastikan mahasiswa sudah melakukan presensi atau data sudah tersinkronisasi dari Google Sheets.")
     else:
         table_rows = []
         for r in records:
