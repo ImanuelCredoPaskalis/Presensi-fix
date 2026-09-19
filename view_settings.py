@@ -99,6 +99,15 @@ def render_settings_view():
     from_secrets = sheets_sync.is_from_secrets()
     webhook_url_effective = sheets_sync.get_webhook_url()
 
+    # Cek apakah ada cache JSON
+    try:
+        import json as _json
+        import os as _os
+        _cache_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "cache.json")
+        _has_json_cache = _os.path.exists(_cache_path) and bool(_json.load(open(_cache_path)) if _os.path.getsize(_cache_path) > 0 else {})
+    except Exception:
+        _has_json_cache = False
+
     if from_secrets:
         st.success("🟢 **Google Sheets Terhubung Aman via Streamlit Secrets**")
         st.caption("🔒 *URL Webhook API dikelola secara privat di server Streamlit Secrets dan TIDAK PERNAH diekspos ke publik/browser pengguna.*")
@@ -126,6 +135,12 @@ def render_settings_view():
             )
             webhook_to_save = webhook_custom.strip()
 
+    # Status cache
+    if _has_json_cache:
+        st.caption(f"💾 Cache JSON tersedia — data dapat ditampilkan secara offline.")
+    else:
+        st.caption("💾 Belum ada cache JSON. Data akan disimpan setelah koneksi Sheets berhasil.")
+
     # Tombol Kontrol Sinkronisasi
     gs_col1, gs_col2 = st.columns(2)
     with gs_col1:
@@ -139,6 +154,9 @@ def render_settings_view():
     with gs_col2:
         if st.button("📥 Tarik Data dari Sheets", use_container_width=True):
             st.info("Fitur tarik data diaktifkan melalui database.py (Google Sheets sebagai sumber utama).")
+            # Refresh cache dan simpan ke JSON
+            database._refresh_cache()
+            st.success("✅ Data berhasil ditarik dan cache JSON diperbarui!")
             st.rerun()
 
     # Tombol Download File Excel Migrasi (hanya jika ada file)

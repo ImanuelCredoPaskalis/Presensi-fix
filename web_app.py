@@ -16,8 +16,21 @@ database.init_db()
 
 # Cek status koneksi dan tampilkan
 conn_ok = database.is_connection_ok()
+
+# Cek apakah data berasal dari cache JSON (offline mode)
+try:
+    import os as _os
+    _cache_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "cache.json")
+    _cache_size = _os.path.getsize(_cache_path) if _os.path.exists(_cache_path) else 0
+    has_json_cache = _cache_size > 0
+except Exception:
+    has_json_cache = False
+
 if not conn_ok:
-    st.warning("⚠️ **Google Sheets belum terhubung!** Pastikan URL Webhook sudah diatur di **Pengaturan**.")
+    if has_json_cache:
+        st.warning("⚠️ **Google Sheets tidak terhubung!** Menampilkan data dari cache JSON lokal.")
+    else:
+        st.warning("⚠️ **Google Sheets belum terhubung!** Pastikan URL Webhook sudah diatur di **Pengaturan**.")
 
 # Load Konfigurasi
 config = load_config()
@@ -146,8 +159,15 @@ with st.sidebar:
     # Status koneksi di sidebar
     if conn_ok:
         st.success("🟢 Google Sheets Terhubung")
+        if has_json_cache:
+            st.caption("💾 Cache JSON tersedia")
     else:
-        st.error("🔴 Google Sheets Belum Terhubung")
+        if has_json_cache:
+            st.warning("🟡 Google Sheets Offline")
+            st.caption("💾 Menampilkan data dari cache JSON")
+        else:
+            st.error("🔴 Google Sheets Belum Terhubung")
+            st.caption("Atur URL Webhook di **Pengaturan**.")
 
     nav_options = [
         "🕒  Presensi Mahasiswa",

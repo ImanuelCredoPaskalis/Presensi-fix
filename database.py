@@ -2,8 +2,11 @@
 Database Module - Google Sheets sebagai Data Utama untuk Sistem Presensi Mahasiswa & Kelas
 Semua operasi CRUD langsung ke Google Sheets via Webhook API.
 Menggunakan caching untuk efisiensi - semua data dalam satu panggilan Sheets.
+Cache juga disimpan ke file JSON agar data tetap tersedia meskipun koneksi bermasalah.
 """
 import datetime
+import json
+import os
 import requests
 
 from config import load_config
@@ -14,6 +17,11 @@ try:
     WIB_TZ = zoneinfo.ZoneInfo("Asia/Jakarta")
 except Exception:
     WIB_TZ = datetime.timezone(datetime.timedelta(hours=7), name="WIB")
+
+
+# ===================== KONSTANNA CACHE FILE =====================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CACHE_FILE = os.path.join(BASE_DIR, "cache.json")
 
 
 def get_wib_now():
@@ -40,15 +48,53 @@ def _is_cache_stale():
     return (_now_seconds() - _CACHE_TIMESTAMP) > _CACHE_STALE_SECONDS
 
 
+def _load_cache_from_json():
+    """
+    Muat cache dari file cache.json jika ada.
+    Mengembalikan dict {sheet_name: [rows]} atau {} jika gagal/file tidak ada.
+    """
+    if not os.path.exists(CACHE_FILE):
+        return {}
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict) and len(data) > 0:
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_cache_to_json(data):
+    """
+    Simpan cache ke file cache.json agar data tetap tersedia secara offline.
+    """
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+        return True
+    except Exception:
+        return False
+
+
 def _refresh_cache():
     """
     Ambil semua tabel dari Google Sheets sekaligus dan simpan di cache.
+    Juga simpan ke file JSON agar data tetap tersedia offline.
     Mengembalikan True jika berhasil, False jika gagal.
     """
     global _SHEETS_CACHE, _CACHE_TIMESTAMP
+    # Coba fetch dari Sheets dulu
     data = _fetch_all_sheets()
     if data is not None:
         _SHEETS_CACHE = data
+        _CACHE_TIMESTAMP = _now_seconds()
+        _save_cache_to_json(data)
+        return True
+    # Fallback: load dari JSON cache jika Sheets gagal
+    json_data = _load_cache_from_json()
+    if json_data:
+        _SHEETS_CACHE = json_data
         _CACHE_TIMESTAMP = _now_seconds()
         return True
     return False
@@ -57,10 +103,16 @@ def _refresh_cache():
 def _get_cache():
     """
     Dapatkan data dari cache. Jika cache kosong atau kedaluwarsa, refresh.
-    Selalu coba fetch jika ada URL webhook.
+    Selalu coba fetch dari Sheets, fallback ke JSON cache jika gagal.
     """
     if _is_cache_stale() or not _SHEETS_CACHE:
+        # Coba refresh dari Sheets; jika gagal, akan fallback ke JSON
         _refresh_cache()
+    # Jika masih kosong, coba load dari JSON
+    if not _SHEETS_CACHE:
+        json_data = _load_cache_from_json()
+        if json_data:
+            _SHEETS_CACHE = json_data
     return _SHEETS_CACHE
 
 
@@ -155,8 +207,10 @@ def _find_row(rows, key, value):
 
 
 def _invalidate_cache():
-    """Invalidasi cache agar data berikutnya diambil langsung dari Google Sheets."""
-    
+    """Invalidasi cache agar data berikutnya diambil langsung dari Google Sheets.
+    Sebelum invalidasi, simpan cache ke JSON agar data tetap tersedia offline."""
+    if _SHEETS_CACHE:
+        _save_cache_to_json(_SHEETS_CACHE)
     _CACHE_TIMESTAMP = None
 
 
@@ -219,30 +273,47 @@ def _call_sheets(action, params=None, json_body=None):
 def init_db():
     """
     Inisialisasi database. Mengambil data dari Google Sheets ke cache.
+    Jika Sheets gagal, fallback ke cache.json.
     Selalu coba fetch jika ada URL webhook.
     """
     global _SHEETS_CACHE, _CACHE_TIMESTAMP
     url = get_webhook_url()
     if not url:
-        print("⚠️ Google Sheets Webhook URL belum diatur.")
-        print("   Data tidak dapat ditampilkan. Atur URL webhook di Pengaturan.")
-        _SHEETS_CACHE = {}
-        _CACHE_TIMESTAMP = None
+        # Tidak ada URL webhook, coba load dari JSON cache
+        json_data = _load_cache_from_json()
+        if json_data:
+            _SHEETS_CACHE = json_data
+            _CACHE_TIMESTAMP = _now_seconds()
+            print(f"✅ Cache JSON dimuat ({sum(len(v) for v in _SHEETS_CACHE.values())} total baris).")
+        else:
+            print("⚠️ Google Sheets Webhook URL belum diatur.")
+            print("   Data tidak dapat ditampilkan. Atur URL webhook di Pengaturan.")
+            _SHEETS_CACHE = {}
+            _CACHE_TIMESTAMP = None
     else:
         success = _refresh_cache()
         if success:
             total = sum(len(v) for v in _SHEETS_CACHE.values())
             print(f"✅ Google Sheets terhubung. Data dimuat ({total} total baris).")
         else:
-            print("⚠️ Gagal terhubung ke Google Sheets. Periksa URL Webhook di Pengaturan.")
-            _SHEETS_CACHE = {}
-            _CACHE_TIMESTAMP = None
+            # Gagal dari Sheets, coba fallback ke JSON cache
+            json_data = _load_cache_from_json()
+            if json_data:
+                _SHEETS_CACHE = json_data
+                _CACHE_TIMESTAMP = _now_seconds()
+                total = sum(len(v) for v in _SHEETS_CACHE.values())
+                print(f"⚠️ Google Sheets gagal, menggunakan cache JSON ({total} total baris).")
+            else:
+                print("⚠️ Gagal terhubung ke Google Sheets dan tidak ada cache JSON. Periksa URL Webhook di Pengaturan.")
+                _SHEETS_CACHE = {}
+                _CACHE_TIMESTAMP = None
 
 def is_connection_ok():
     """Periksa apakah koneksi Google Sheets aktif dan data tersedia."""
     url = get_webhook_url()
     if not url:
-        return False
+        # Tidak ada URL, cek apakah ada cache JSON
+        return bool(_load_cache_from_json())
     return _refresh_cache()
 
 # ===================== DATA ACCESS LAYER =====================
