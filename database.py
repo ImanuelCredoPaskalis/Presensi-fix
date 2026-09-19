@@ -223,11 +223,12 @@ def init_db():
     Inisialisasi database. Mengambil data dari Google Sheets dan menyimpan di cache.
     Jika webhook belum diatur, tampilkan pesan peringatan.
     """
+    global _SHEETS_CACHE, _CACHE_TIMESTAMP
     if not is_sheets_enabled():
         print("⚠️ Google Sheets Webhook URL belum diatur.")
         print("   Data tidak dapat ditampilkan. Atur URL webhook di Pengaturan.")
         _SHEETS_CACHE = {}
-        _invalidate_cache()
+        _CACHE_TIMESTAMP = None
     else:
         success = _refresh_cache()
         if success:
