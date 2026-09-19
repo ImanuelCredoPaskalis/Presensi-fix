@@ -1,7 +1,7 @@
 """
 Database Module - Google Sheets sebagai Data Utama untuk Sistem Presensi Mahasiswa & Kelas
-Mendukung Multi-Sesi Kelas (Bisa lebih dari 1 kelas dalam 1 hari), Tugas Luar, dan 6 Waktu Presensi
 Semua operasi CRUD langsung ke Google Sheets via Webhook API.
+Menggunakan caching untuk efisiensi - semua data dalam satu panggilan Sheets.
 """
 import datetime
 import requests
@@ -17,41 +17,84 @@ except Exception:
 
 
 def get_wib_now():
-    """
-    Mengembalikan objek datetime saat ini dalam Waktu Indonesia Barat (WIB / UTC+7).
-    Memastikan konsistensi waktu di semua platform (Windows, Linux, Mac, Docker/Codespaces).
-    """
+    """Mengembalikan datetime saat ini dalam Waktu Indonesia Barat (WIB / UTC+7)."""
     return datetime.datetime.now(WIB_TZ)
 
 
-def _call_sheets(action, params=None, json_body=None):
+# ===================== CACHING DATA =====================
+# Module-level cache: semua data Sheets disimpan di sini setelah pertama kali diambil.
+# Fungsi-fungsi view dan business logic membaca dari cache ini, bukan dari SQLite.
+
+_SHEETS_CACHE = {}
+_CACHE_TIMESTAMP = None
+_CACHE_STALE_SECONDS = 30  # Cache akan refresh setelah 30 detik
+
+
+def _now_seconds():
+    return datetime.datetime.now().timestamp()
+
+
+def _is_cache_stale():
+    if _CACHE_TIMESTAMP is None:
+        return True
+    return (_now_seconds() - _CACHE_TIMESTAMP) > _CACHE_STALE_SECONDS
+
+
+def _refresh_cache():
     """
-    Helper untuk memanggil Google Sheets Webhook API.
-    Mengembalikan data JSON atau None jika gagal.
+    Ambil semua tabel dari Google Sheets sekaligus dan simpan di cache.
+    Mengembalikan True jika berhasil, False jika gagal.
+    """
+    global _SHEETS_CACHE, _CACHE_TIMESTAMP
+    data = _fetch_all_sheets()
+    if data is not None:
+        _SHEETS_CACHE = data
+        _CACHE_TIMESTAMP = _now_seconds()
+        return True
+    return False
+
+
+def _get_cache():
+    """
+    Dapatkan data dari cache. Jika cache kosong atau kedaluwarsa, refresh.
+    Mengembalikan dict {sheet_name: [rows]} atau {} jika gagal.
+    """
+    if not is_sheets_enabled():
+        return {}
+    if _is_cache_stale() or not _SHEETS_CACHE:
+        _refresh_cache()
+    return _SHEETS_CACHE
+
+
+def _fetch_all_sheets():
+    """
+    Panggil Google Sheets Webhook untuk mengambil semua tabel sekaligus.
+    Mengembalikan dict {sheet_name: [rows]} atau None jika gagal.
     """
     url = get_webhook_url()
     if not url:
         return None
     try:
-        if json_body is not None:
-            resp = requests.post(url, json=json_body, timeout=30)
-        else:
-            resp = requests.get(url, params=params, timeout=30)
+        resp = requests.get(url, params={"action": "get_all"}, timeout=30)
         if resp.status_code != 200:
             return None
-        data = resp.json()
-        if data.get("status") != "success":
+        result = resp.json()
+        if result.get("status") != "success":
             return None
-        return data
+        return result.get("data") or {}
     except Exception:
         return None
 
 
-def _get_table_data(table_name):
+def _get_table_from_cache(table_name):
     """
-    Ambil semua data dari sheet tertentu.
-    Mengembalikan list of dict.
+    Ambil data dari cache untuk tabel tertentu.
+    Jika cache tidak tersedia, fetch langsung.
     """
+    cache = _get_cache()
+    if table_name in cache:
+        return cache[table_name]
+    # Fallback: fetch langsung
     url = get_webhook_url()
     if not url:
         return []
@@ -67,25 +110,7 @@ def _get_table_data(table_name):
         return []
 
 
-def _get_all_sheets_data():
-    """
-    Ambil semua tabel sekaligus.
-    Mengembalikan dict {sheet_name: [rows]}.
-    """
-    url = get_webhook_url()
-    if not url:
-        return {}
-    try:
-        resp = requests.get(url, params={"action": "get_all"}, timeout=30)
-        if resp.status_code != 200:
-            return {}
-        data = resp.json()
-        if data.get("status") != "success":
-            return {}
-        return data.get("data") or {}
-    except Exception:
-        return {}
-
+# ===================== HELPER FUNCTIONS =====================
 
 def _safe_int(value, default=1):
     """Google Sheets dapat mengembalikan 1/0, TRUE/FALSE, atau string kosong."""
@@ -131,6 +156,12 @@ def _find_row(rows, key, value):
     return None
 
 
+def _invalidate_cache():
+    """Invalidasi cache agar data berikutnya diambil langsung dari Google Sheets."""
+    
+    _CACHE_TIMESTAMP = None
+
+
 def _upsert_row_in_sheets(table_name, row_dict, key="id"):
     """Upsert (insert atau update) baris ke Google Sheets."""
     url = get_webhook_url()
@@ -165,53 +196,74 @@ def _delete_row_in_sheets(table_name, key, value):
         return False
 
 
+def _call_sheets(action, params=None, json_body=None):
+    """Helper untuk memanggil Google Sheets Webhook API."""
+    url = get_webhook_url()
+    if not url:
+        return None
+    try:
+        if json_body is not None:
+            resp = requests.post(url, json=json_body, timeout=30)
+        else:
+            resp = requests.get(url, params=params, timeout=30)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if data.get("status") != "success":
+            return None
+        return data
+    except Exception:
+        return None
+
+
+# ===================== INISIALISASI =====================
+
 def init_db():
     """
-    Inisialisasi database. Karena menggunakan Google Sheets sebagai sumber data utama,
-    fungsi ini hanya memverifikasi koneksi ke Google Sheets.
+    Inisialisasi database. Mengambil data dari Google Sheets dan menyimpan di cache.
+    Jika webhook belum diatur, tampilkan pesan peringatan.
     """
     if not is_sheets_enabled():
-        print("⚠️ Google Sheets Webhook URL belum diatur. Data akan disimpan lokal.")
+        print("⚠️ Google Sheets Webhook URL belum diatur.")
+        print("   Data tidak dapat ditampilkan. Atur URL webhook di Pengaturan.")
+        _SHEETS_CACHE = {}
+        _invalidate_cache()
     else:
-        print("✅ Google Sheets terhubung sebagai sumber data utama.")
+        success = _refresh_cache()
+        if success:
+            print(f"✅ Google Sheets terhubung. Data dimuat ({sum(len(v) for v in _SHEETS_CACHE.values())} total baris).")
+        else:
+            print("⚠️ Gagal terhubung ke Google Sheets. Periksa URL Webhook.")
 
 
-# ==================== GOOGLE SHEETS DATA ACCESS ====================
+# ===================== DATA ACCESS LAYER =====================
 
 def _get_all_pegawai_raw():
     """Ambil semua data pegawai dari Google Sheets (mahasiswa)."""
-    return _get_table_data("mahasiswa")
+    return _get_table_from_cache("mahasiswa")
 
 
 def _get_all_presensi_raw():
     """Ambil semua data presensi dari Google Sheets."""
-    return _get_table_data("presensi")
+    return _get_table_from_cache("presensi")
 
 
 def _get_all_riwayat_kelas_raw():
     """Ambil semua data riwayat kelas dari Google Sheets."""
-    return _get_table_data("riwayat_kelas")
+    return _get_table_from_cache("riwayat_kelas")
 
 
 def _get_all_riwayat_izin_raw():
     """Ambil semua data riwayat izin dari Google Sheets."""
-    return _get_table_data("riwayat_izin")
+    return _get_table_from_cache("riwayat_izin")
 
 
 def _get_all_riwayat_tugas_raw():
     """Ambil semua data riwayat tugas luar dari Google Sheets."""
-    return _get_table_data("riwayat_tugas_luar")
+    return _get_table_from_cache("riwayat_tugas_luar")
 
 
-def _get_all_data_cached():
-    """
-    Ambil semua data sekaligus untuk efisiensi.
-    Mengembalikan dict dengan semua tabel.
-    """
-    return _get_all_sheets_data()
-
-
-# ==================== MAHASISWA (PEGAWAI) CRUD ====================
+# ===================== MAHASISWA (PEGAWAI) CRUD =====================
 
 def get_all_pegawai(only_active=True, search_query=None, departemen=None):
     """Ambil semua data mahasiswa dari Google Sheets."""
@@ -300,7 +352,6 @@ def add_pegawai(nama, telepon="", email="", jabatan="Mahasiswa", departemen="Pen
         clean_nik = f"MHS-{get_wib_now().strftime('%M%S')}"
 
     new_id = len(all_pegawai) + 1
-    # Pastikan ID unik
     existing_ids = [r.get("id") for r in all_pegawai]
     while str(new_id) in [str(eid) for eid in existing_ids]:
         new_id += 1
@@ -319,6 +370,9 @@ def add_pegawai(nama, telepon="", email="", jabatan="Mahasiswa", departemen="Pen
 
     success = _upsert_row_in_sheets("mahasiswa", row_data, key="id")
     if success:
+        # Invalidate cache agar data refresh
+        
+        _invalidate_cache()
         return True, "Data mahasiswa berhasil ditambahkan!", new_id
     return False, "Gagal menambahkan data ke Google Sheets.", None
 
@@ -349,6 +403,8 @@ def update_pegawai(pegawai_id, nama, telepon="", email="", jabatan="Mahasiswa", 
 
     success = _upsert_row_in_sheets("mahasiswa", row_data, key="id")
     if success:
+        
+        _invalidate_cache()
         return True, "Data mahasiswa berhasil diperbarui!"
     return False, "Gagal memperbarui data di Google Sheets."
 
@@ -368,13 +424,16 @@ def delete_pegawai(pegawai_id):
     has_presensi = any(str(p.get("pegawai_id")) == str(pegawai_id) for p in all_presensi)
 
     if has_presensi:
-        # Ubah status menjadi Non-Aktif
         row_data = {"id": pegawai_id, "status_aktif": 0}
         _upsert_row_in_sheets("mahasiswa", row_data, key="id")
+        
+        _invalidate_cache()
         return True, "Mahasiswa memiliki riwayat presensi, status diubah menjadi Non-Aktif."
 
     success = _delete_row_in_sheets("mahasiswa", "id", pegawai_id)
     if success:
+        
+        _invalidate_cache()
         return True, "Data mahasiswa berhasil dihapus permanen."
     return False, "Gagal menghapus data dari Google Sheets."
 
@@ -392,7 +451,7 @@ def get_list_departemen():
     return sorted(deps)
 
 
-# ==================== RIWAYAT MULTI-SESI KELAS ====================
+# ===================== RIWAYAT MULTI-SESI KELAS =====================
 
 def get_riwayat_kelas_by_presensi(presensi_id):
     """Ambil riwayat kelas berdasarkan presensi_id."""
@@ -588,7 +647,7 @@ def format_izin_time_display(riwayat_list):
         return f"{len(riwayat_list)} Izin ({', '.join(sesi_strs)})"
 
 
-# ==================== PRESENSI ====================
+# ===================== PRESENSI =====================
 
 def get_today_str():
     return get_wib_now().strftime("%Y-%m-%d")
@@ -655,16 +714,18 @@ def record_attendance(pegawai_id, action_type, keterangan="", custom_time=None):
     today = get_today_str()
     now_time = custom_time if custom_time else get_current_time_str()
 
-    # Ambil data terkait dari Sheets
+    # Ambil data terkait dari cache/Sheets
     all_pegawai = _get_all_pegawai_raw()
     pegawai = _find_row(all_pegawai, "id", pegawai_id)
     if not pegawai:
         return False, "Pegawai tidak ditemukan!", None
 
     all_presensi = _get_all_presensi_raw()
-    existing = _find_row(all_presensi, "pegawai_id", pegawai_id)
-    if existing and _safe_text(existing.get("tanggal")) != today:
-        existing = None
+    existing = None
+    for p in all_presensi:
+        if (_safe_id(p.get("pegawai_id")) == pegawai_id and _safe_text(p.get("tanggal")) == today):
+            existing = p
+            break
 
     pegawai_data = {
         "id": _safe_id(pegawai.get("id")),
@@ -697,6 +758,8 @@ def record_attendance(pegawai_id, action_type, keterangan="", custom_time=None):
             _upsert_row_in_sheets("presensi", new_presensi, key="id")
 
         msg = f"Berhasil! Presensi MASUK tercatat pukul {now_time} (Tepat Waktu)."
+        
+        _invalidate_cache()
         return True, msg, new_presensi if not existing else existing
 
     # 2. JAM KE KELAS (MULTI-SESI)
@@ -749,6 +812,8 @@ def record_attendance(pegawai_id, action_type, keterangan="", custom_time=None):
         }
         _upsert_row_in_sheets("riwayat_kelas", new_rk, key="id")
         msg = f"Berhasil! Presensi KE KELAS (Sesi {sesi_num}) tercatat pukul {now_time}. Keterangan: {ket}."
+        
+        _invalidate_cache()
         return True, msg, new_presensi
 
     # 3. JAM KEMBALI DARI KELAS
@@ -780,6 +845,8 @@ def record_attendance(pegawai_id, action_type, keterangan="", custom_time=None):
 
         durasi_sesi = calculate_time_diff_hours(active_class.get("jam_masuk_kelas"), now_time)
         msg = f"Selamat Datang Kembali! Sesi Kelas #{sesi_ke} selesai pukul {now_time} (Durasi Sesi: {durasi_sesi})."
+        
+        _invalidate_cache()
         return True, msg, existing if existing else active_class
 
     # 4. JAM BERTUGAS KELUAR
@@ -822,13 +889,15 @@ def record_attendance(pegawai_id, action_type, keterangan="", custom_time=None):
         }
         _upsert_row_in_sheets("riwayat_tugas_luar", new_rt, key="id")
         msg = f"Berhasil! Presensi TUGAS KELUAR tercatat pukul {now_time}. Keterangan: {ket}."
+        
+        _invalidate_cache()
         return True, msg, new_presensi
 
     # 5. JAM KEMBALI DARI TUGAS LUAR
     elif action_type == "kembali":
         if not existing or not _safe_text(existing.get("jam_bertugas_keluar")):
             return False, f"{pegawai_data['nama']} belum tercatat melakukan presensi 'Tugas Keluar' hari ini.", None
-        if _safe_text(existing.get("jam_kembali")) and not (not _safe_text(existing.get("jam_kembali"))):
+        if _safe_text(existing.get("jam_kembali")):
             return False, f"{pegawai_data['nama']} sudah mencatat jam KEMBALI TUGAS pukul {existing['jam_kembali']}.", dict(existing)
 
         existing["jam_kembali"] = now_time
@@ -843,6 +912,8 @@ def record_attendance(pegawai_id, action_type, keterangan="", custom_time=None):
                 break
 
         msg = f"Selamat Datang Kembali! Presensi KEMBALI TUGAS tercatat pukul {now_time}."
+        
+        _invalidate_cache()
         return True, msg, existing
 
     # 6. JAM IZIN KELUAR
@@ -887,6 +958,8 @@ def record_attendance(pegawai_id, action_type, keterangan="", custom_time=None):
         }
         _upsert_row_in_sheets("riwayat_izin", new_ri, key="id")
         msg = f"Berhasil! Presensi IZIN KELUAR tercatat pukul {now_time}. Keterangan: {ket}."
+        
+        _invalidate_cache()
         return True, msg, existing
 
     # 7. KEMBALI SHIFT (SELESAI IZIN KELUAR)
@@ -911,6 +984,8 @@ def record_attendance(pegawai_id, action_type, keterangan="", custom_time=None):
             _upsert_row_in_sheets("presensi", existing, key="id")
 
         msg = f"Selamat Datang Kembali! Selesai Izin Keluar pukul {now_time} (Durasi Izin: {durasi_izin}). Shift dilanjutkan."
+        
+        _invalidate_cache()
         return True, msg, existing if existing else active_izin
 
     # 8. JAM KELUAR / SELESAI
@@ -924,21 +999,18 @@ def record_attendance(pegawai_id, action_type, keterangan="", custom_time=None):
             existing["updated_at"] = get_wib_now().strftime("%Y-%m-%d %H:%M:%S")
             _upsert_row_in_sheets("presensi", existing, key="id")
 
-            # Tutup otomatis sesi kelas
             all_rk = _get_all_riwayat_kelas_raw()
             for rk in all_rk:
                 if (_safe_id(rk.get("presensi_id")) == _safe_id(existing.get("id")) and not _safe_text(rk.get("jam_kembali_kelas"))):
                     rk["jam_kembali_kelas"] = now_time
                     _upsert_row_in_sheets("riwayat_kelas", rk, key="id")
 
-            # Tutup otomatis sesi tugas luar
             all_rt = _get_all_riwayat_tugas_raw()
             for rt in all_rt:
                 if (_safe_id(rt.get("presensi_id")) == _safe_id(existing.get("id")) and _safe_text(rt.get("jam_keluar")) and not _safe_text(rt.get("jam_kembali"))):
                     rt["jam_kembali"] = now_time
                     _upsert_row_in_sheets("riwayat_tugas_luar", rt, key="id")
 
-            # Tutup otomatis sesi izin
             all_ri = _get_all_riwayat_izin_raw()
             for ri in all_ri:
                 if (_safe_id(ri.get("presensi_id")) == _safe_id(existing.get("id")) and _safe_text(ri.get("jam_izin_keluar")) and not _safe_text(ri.get("jam_kembali_izin"))):
@@ -967,13 +1039,15 @@ def record_attendance(pegawai_id, action_type, keterangan="", custom_time=None):
             msg += f" (Durasi Shift: {shift_dur})."
         else:
             msg += "."
+        
+        _invalidate_cache()
         return True, msg, existing if existing else new_presensi
 
     else:
         return False, "Aksi presensi tidak valid!", None
 
 
-# ==================== SUMMARY & STATISTIK ====================
+# ===================== SUMMARY & STATISTIK =====================
 
 def get_today_summary():
     """Ringkasan presensi hari ini."""
@@ -1018,7 +1092,7 @@ def get_today_summary():
 
 
 def get_today_presence_table():
-    """Tabel presensi hari ini dengan data lengkap."""
+    """Tabel presensi hari ini dengan data lengkap dari Google Sheets."""
     today = get_today_str()
     all_pegawai = _get_all_pegawai_raw()
     all_presensi = _get_all_presensi_raw()
@@ -1026,7 +1100,7 @@ def get_today_presence_table():
     all_ri = _get_all_riwayat_izin_raw()
     all_rt = _get_all_riwayat_tugas_raw()
 
-    # Buat map pegawai
+    # Buat map pegawai aktif
     pegawai_map = {}
     for p in all_pegawai:
         if _safe_int(p.get("status_aktif"), 1) == 1:
@@ -1063,7 +1137,7 @@ def get_today_presence_table():
             "updated_at": _safe_text(p.get("updated_at"))
         }
 
-        # Riwayat kelas dan izin
+        # Riwayat kelas dan izin dari cache
         rk_list = []
         for rk in all_rk:
             if _safe_id(rk.get("presensi_id")) == row["presensi_id"]:
@@ -1124,7 +1198,7 @@ def get_today_presence_table():
 
 
 def get_presensi_history(start_date=None, end_date=None, pegawai_id=None, departemen=None, search=None):
-    """Riwayat presensi dengan filter."""
+    """Riwayat presensi dengan filter dari Google Sheets."""
     all_pegawai = _get_all_pegawai_raw()
     all_presensi = _get_all_presensi_raw()
     all_rk = _get_all_riwayat_kelas_raw()
@@ -1203,7 +1277,7 @@ def get_presensi_history(start_date=None, end_date=None, pegawai_id=None, depart
     return rows
 
 
-# ==================== PERHITUNGAN DURASI ====================
+# ===================== PERHITUNGAN DURASI =====================
 
 def calculate_time_diff_hours(time_start_str, time_end_str):
     """Menghitung selisih waktu dalam format 'Xj Ym'."""
