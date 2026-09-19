@@ -16,49 +16,6 @@ def get_admin_pin(config):
         pass
     return str(config.get("admin_pin", "admin123")).strip()
 
-@st.dialog("⚠️ Konfirmasi Reset Database")
-def modal_reset_database():
-    st.error("### ⚠️ PERINGATAN: TINDAKAN BERISIKO TINGGI!")
-    st.write(
-        "Apakah Anda yakin ingin **MENGHAPUS SEMUA DATA**?\n\n"
-        "Tindakan ini akan menghapus permanen:\n"
-        "- Seluruh daftar mahasiswa\n"
-        "- Seluruh riwayat presensi harian\n"
-        "- Seluruh riwayat sesi kelas & tugas luar\n"
-        "- Seluruh riwayat sesi izin\n\n"
-        "Database akan kembali kosong bersih seperti baru."
-    )
-    confirm_text = st.text_input("Ketik **RESET** untuk konfirmasi penghapusan:", placeholder="RESET")
-
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        if st.button("🗑️ Ya, Kosongkan Semua Data", type="primary", use_container_width=True):
-            if confirm_text.strip() != "RESET":
-                st.error("Teks konfirmasi salah. Harap ketik RESET persis.")
-            else:
-                try:
-                    conn = database.get_connection()
-                    cur = conn.cursor()
-                    cur.execute("DELETE FROM riwayat_kelas")
-                    cur.execute("DELETE FROM riwayat_tugas_luar")
-                    cur.execute("DELETE FROM riwayat_izin")
-                    cur.execute("DELETE FROM presensi")
-                    cur.execute("DELETE FROM pegawai")
-                    cur.execute("DELETE FROM sqlite_sequence")
-                    conn.commit()
-                    conn.close()
-
-                    st.session_state["settings_alert"] = {
-                        "type": "success",
-                        "msg": "Semua data berhasil dibersihkan! Database sekarang dalam keadaan kosong."
-                    }
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Gagal mengosongkan database: {str(e)}")
-    with col2:
-        if st.button("Batal", use_container_width=True):
-            st.rerun()
-
 def render_settings_view():
     config = load_config()
 
@@ -158,8 +115,8 @@ def render_settings_view():
             )
             webhook_to_save = webhook_custom.strip() if webhook_custom.strip() else webhook_url_effective
     else:
-        st.info("🟡 **Mode SQLite Lokal**: Aplikasi saat ini berjalan secara lokal. Hubungkan Google Sheets jika ingin sinkronisasi online.")
-        with st.expander("⚙️ Hubungkan Google Sheets (Lokal/Manual)"):
+        st.info("🟡 **Google Sheets Belum Terhubung**: Masukkan URL Webhook untuk mengaktifkan sinkronisasi cloud.")
+        with st.expander("⚙️ Hubungkan Google Sheets"):
             webhook_custom = st.text_input(
                 "URL Webhook Google Apps Script:",
                 value="",
@@ -169,8 +126,8 @@ def render_settings_view():
             )
             webhook_to_save = webhook_custom.strip()
 
-    # Tombol Kontrol Sinkronisasi (Hanya untuk Admin)
-    gs_col1, gs_col2, gs_col3 = st.columns(3)
+    # Tombol Kontrol Sinkronisasi
+    gs_col1, gs_col2 = st.columns(2)
     with gs_col1:
         if st.button("🔍 Uji Koneksi Sheets", use_container_width=True):
             ok, msg = sheets_sync.test_connection()
@@ -180,22 +137,11 @@ def render_settings_view():
                 st.error(f"❌ {msg}")
 
     with gs_col2:
-        if st.button("📥 Tarik Data (Pull dari Sheets)", use_container_width=True):
-            ok, msg, stats = sheets_sync.pull_from_sheets()
-            if ok:
-                st.success(f"✅ {msg} ({stats})")
-            else:
-                st.error(f"❌ {msg}")
+        if st.button("📥 Tarik Data dari Sheets", use_container_width=True):
+            st.info("Fitur tarik data diaktifkan melalui database.py (Google Sheets sebagai sumber utama).")
+            st.rerun()
 
-    with gs_col3:
-        if st.button("📤 Upload Semua ke Sheets (Push All)", use_container_width=True):
-            ok, msg = sheets_sync.push_all_to_sheets()
-            if ok:
-                st.success(f"✅ {msg}")
-            else:
-                st.error(f"❌ {msg}")
-
-    # Tombol Download File Excel Migrasi
+    # Tombol Download File Excel Migrasi (hanya jika ada file)
     xlsx_path = "migrasi_data_presensi_google_sheets.xlsx"
     if os.path.exists(xlsx_path):
         with open(xlsx_path, "rb") as f:
@@ -223,7 +169,6 @@ def render_settings_view():
             new_config["theme_mode"] = selected_theme
             new_config["admin_pin"] = new_pin_input.strip() if new_pin_input.strip() else "admin123"
 
-            # Jangan ubah webhook jika sedang dikelola via Streamlit Secrets
             if not from_secrets:
                 new_config["gsheets_webhook_url"] = webhook_to_save
 
@@ -240,5 +185,4 @@ def render_settings_view():
             st.rerun()
 
     with btn_col2:
-        if st.button("🗑️ Kosongkan / Reset Semua Data", use_container_width=True):
-            modal_reset_database()
+        st.warning("⚠️ Semua data tersimpan di Google Sheets.\nTidak ada database lokal yang bisa di-reset.")

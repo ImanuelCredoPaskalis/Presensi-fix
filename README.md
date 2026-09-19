@@ -68,20 +68,22 @@ streamlit run web_app.py
 - Ganti Nama Laboratorium & Alamat / Ruangan Lab.
 - Atur Jam Masuk Standar dan Jam Pulang Standar.
 - Mode Tampilan (Dark Mode / Light Mode).
-- Tombol Reset Database Bersih.
+- Hubungkan Google Sheets sebagai sumber data.
+- Tidak ada tombol Reset Database (semua data tersimpan di Google Sheets).
 
 ---
 
-## 🗄️ Penyimpanan Data: Mode Ganda (Google Sheets Cloud & SQLite Lokal)
+## 🗄️ Penyimpanan Data: Google Sheets (Sumber Utama)
 
-Aplikasi ini mendukung **penyimpanan hybrid berkecepatan tinggi**:
-1. **Google Sheets (Cloud Online)**:
-   - Data otomatis tersinkronisasi dua arah secara *real-time* ke **Google Spreadsheet** di Google Drive Anda.
-   - Siapapun yang presensi dari HP/laptop melalui link Streamlit Cloud, datanya langsung tercatat permanen di Google Sheets.
-   - Tidak akan hilang meski server Streamlit Cloud tertidur (*sleep*) atau di-restart.
-2. **SQLite Lokal (`presensi.db`)**:
-   - Berfungsi sebagai *local cache* berkecepatan tinggi sehingga antarmuka Streamlit berjalan instan tanpa jeda loading.
-   - Tetap dapat digunakan 100% secara *offline* di laptop/komputer lab tanpa internet.
+Aplikasi ini menggunakan **Google Sheets** sebagai **sumber data utama** secara langsung. Semua operasi CRUD (tambah, edit, hapus, dan catat presensi) dilakukan langsung ke Google Spreadsheet via Webhook API Google Apps Script.
+
+- **Google Sheets (Cloud Online)**:
+  - Seluruh data tersimpan permanen di Google Spreadsheet di Google Drive Anda.
+  - Sinkronisasi real-time: siapapun yang presensi dari HP/laptop melalui link Streamlit Cloud, datanya langsung tercatat.
+  - Tidak akan hilang meski server Streamlit Cloud tertidur atau di-restart.
+- **Tanpa SQLite Lokal**: Tidak ada database lokal. Semua data diakses langsung dari Google Sheets.
+
+> **Catatan**: Pastikan URL Webhook Google Apps Script telah diatur di menu **Pengaturan** atau di **Streamlit Secrets** (`gsheets_webhook_url`) agar aplikasi dapat menyimpan dan membaca data dari Google Sheets.
 
 ---
 
